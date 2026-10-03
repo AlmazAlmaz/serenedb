@@ -23,9 +23,11 @@
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/execution/expression_executor_state.hpp>
 #include <duckdb/function/scalar_function.hpp>
+#include <duckdb/parser/parsed_data/create_coordinate_system_info.hpp>
 #include <duckdb/planner/expression/bound_function_expression.hpp>
 
 #include "connector/curve_index.h"
+#include "connector/geo_validate.h"
 
 namespace sdb::connector {
 namespace {
@@ -46,6 +48,11 @@ void CurveFunction(duckdb::DataChunk& args, duckdb::ExpressionState& state,
 }  // namespace
 
 void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
+  duckdb::CreateCoordinateSystemInfo crs{
+    duckdb::Identifier{kCartesianCRS}, "SDB", "CARTESIAN", {}, {}};
+  crs.internal = true;
+  crs.on_conflict = duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
+  loader.RegisterCoordinateSystem(crs);
   duckdb::ScalarFunction function{
     duckdb::Identifier{kCurveFunction}, duckdb::vector<duckdb::LogicalType>{},
     duckdb::LogicalType::BLOB, CurveFunction, CurveBind};
