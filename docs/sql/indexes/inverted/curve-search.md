@@ -85,9 +85,9 @@ never coarser than with `level_step = 1`, only the query carries more terms, and
 every query term is a term dictionary lookup. The default keeps that expansion
 at no more than 16 terms per cell: 3 for two dimensions, 2 for three and four,
 and 1 from five dimensions up. On one million three-dimensional points a step
-of 2 builds the index in 52 to 59% of the time of a step of 1 with query times
-within 10%, while a step of 3 builds faster still but turns a 64-cell cover into
-up to 1,200 query terms.
+of 2 builds the index in 56 to 59% of the time of a step of 1 with queries at
+most 12% slower, while a step of 3 builds faster still but turns a 64-cell
+cover into up to 1,233 query terms.
 
 ## Choosing a curve
 
@@ -99,7 +99,7 @@ not automatically imply fewer postings for this term representation.
 
 A curve index pays off for boxes that are selective in several dimensions at
 once, where each column's range alone matches many rows: on one million
-independent three-dimensional points such boxes run 12 to 25 times faster than
+independent three-dimensional points such boxes run 12 to 22 times faster than
 intersecting per-column ranges. Correlated data narrows the gap, small boxes on
 correlated data and two-dimensional data at that size are a tie, and a box with
 an open side is evaluated by the scalar predicate. The index costs five to six
