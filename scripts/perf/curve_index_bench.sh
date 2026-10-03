@@ -72,14 +72,11 @@ for t in ind cor; do
 	echo "query ${t} one axis: max(id) ms granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}")"
 done
 
-declare -A OIDS=()
-for index in ind_granular ind_curve cor_granular cor_curve; do
-	OIDS[${index}]=$(sql "SELECT oid FROM pg_class WHERE relname = '${index}'")
+for t in ind cor; do
+	sql "VACUUM (COMPACT_TABLE) ${t}" >/dev/null
 done
-kill -9 "${SERENED_PID}" >/dev/null 2>&1 || true
-wait "${SERENED_PID}" 2>/dev/null || true
 for index in ind_granular ind_curve cor_granular cor_curve; do
-	size=$(find "${DATA_DIR}/engine_search" -mindepth 4 -maxdepth 4 -type d -name "${OIDS[${index}]}" \
-		-exec du -sm {} + | awk '{s += $1} END {print s + 0}')
+	size=$(sql "SELECT round(m.value / 1048576.0)::BIGINT FROM sdb_metrics m JOIN pg_class c ON c.oid = m.relation_id
+		WHERE c.relname = '${index}' AND m.metric = 'index_size'")
 	echo "size ${index}: ${size} MB"
 done
