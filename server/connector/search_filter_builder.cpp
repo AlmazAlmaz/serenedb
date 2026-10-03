@@ -74,6 +74,7 @@
 
 #include "comparison_op.hpp"
 #include "connector/common.h"
+#include "connector/curve_index.h"
 #include "connector/index_expression.hpp"
 #include "connector/pg_logical_types.h"
 #include "connector/term_dict.h"
@@ -328,6 +329,11 @@ bool IsComparisonExpr(const duckdb::Expression& expr) {
 
 absl::Status RequireKeywordAnalyzed(const SearchColumnInfo& info,
                                     std::string_view hint) {
+  if (info.tokenizer.analyzer &&
+      info.tokenizer.analyzer->type() == irs::Type<CurveTokenizer>::id()) {
+    return absl::InvalidArgumentError(
+      "Curve terms require an exact scalar recheck");
+  }
   if (info.logical_type.id() == duckdb::LogicalTypeId::VARCHAR &&
       info.tokenizer.analyzer->type() !=
         irs::Type<irs::KeywordTokenizer>::id()) {

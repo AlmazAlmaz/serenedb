@@ -63,6 +63,7 @@
 
 #include "catalog/catalog.h"
 #include "catalog/entry/inverted_index.h"
+#include "connector/curve_filter_builder.h"
 #include "connector/duckdb_client_state.h"
 #include "connector/functions/search.h"
 #include "connector/functions/ts_offsets.h"
@@ -1521,6 +1522,12 @@ bool ClaimSearchConjuncts(
   const auto range_modes = DecideColumnRanges(filters, getter, context);
   std::vector<std::shared_ptr<const duckdb::Expression>> claimed_exprs;
   for (size_t i = 0; i < filters.size();) {
+    if (connector::AddCurveCandidates(*root_and, *filters[i], getter,
+                                      expr_getter, context)) {
+      any_claimed = true;
+      ++i;
+      continue;
+    }
     const auto mode = range_modes.find(filters[i].get());
     if (TryClaimIResearchConjunctImpl(
           *root_and, filters[i], getter, expr_getter, context, &filter_scorers,

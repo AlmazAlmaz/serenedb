@@ -36,6 +36,7 @@
 
 #include "catalog/catalog.h"
 #include "connector/common.h"
+#include "connector/curve_index.h"
 #include "connector/inet_terms.h"
 #include "connector/primary_key.h"
 #include "connector/term_dict.h"
@@ -849,6 +850,18 @@ void SearchSinkInsertBaseImpl::SwitchFieldImpl(irs::field_id field_id,
 
   if (is_stored && !is_term_dict) {
     AppendToColumn(field_id, type, vec, count);
+    return;
+  }
+  if (entry && entry->curve) {
+    duckdb::Vector encoded{duckdb::LogicalType::BLOB, count};
+    PackCurvePoints(vec, count, entry->curve->dimensions, encoded);
+    if (is_stored) {
+      AppendToColumn(field_id, type, vec, count);
+    }
+    encoded.ToUnifiedFormat(count, _vec_fmt.unified);
+    _null_field.PrepareForBlockValue(entry->null_field_id);
+    _field.PrepareForStringValue(field_id, ResolveTokenizer(field_id));
+    WriteAnalyzedColumn(_field, _null_field, encoded, count);
     return;
   }
   if (type.IsJSONType() && entry && entry->HasJsonLeafFields()) {
