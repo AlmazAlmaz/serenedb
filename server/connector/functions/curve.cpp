@@ -23,8 +23,10 @@
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/vector/flat_vector.hpp>
 #include <duckdb/function/scalar_function.hpp>
+#include <duckdb/parser/parsed_data/create_coordinate_system_info.hpp>
 
 #include "connector/curve_index.h"
+#include "connector/geo_validate.h"
 
 namespace sdb::connector {
 namespace {
@@ -79,6 +81,11 @@ void BoxContains(duckdb::DataChunk& args, duckdb::ExpressionState&,
 }  // namespace
 
 void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
+  duckdb::CreateCoordinateSystemInfo crs{
+    duckdb::Identifier{kCartesianCRS}, "SDB", "CARTESIAN", {}, {}};
+  crs.internal = true;
+  crs.on_conflict = duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
+  loader.RegisterCoordinateSystem(crs);
   duckdb::ScalarFunction function{
     "sdb_box_contains",
     {duckdb::LogicalType::ANY, duckdb::LogicalType::ANY,

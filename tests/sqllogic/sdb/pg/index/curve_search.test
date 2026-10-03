@@ -2,9 +2,10 @@ statement ok
 CREATE TABLE curve_points(id INTEGER PRIMARY KEY, x BIGINT, y DOUBLE, t TIMESTAMP);
 
 query
-SELECT opcname FROM pg_catalog.pg_opclass WHERE opcname = 'curve';
+SELECT opcname FROM pg_catalog.pg_opclass WHERE opcname IN ('curve', 'cartesian') ORDER BY opcname;
 ----
 opcname
+cartesian
 curve
 
 query

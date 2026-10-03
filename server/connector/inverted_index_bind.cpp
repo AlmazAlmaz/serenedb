@@ -102,11 +102,9 @@ constexpr std::string_view kRaBitQQuant = "rabitq";
 constexpr std::string_view kTQQuant = "tq";
 constexpr std::string_view kNoneQuant = "none";
 
-constexpr std::array<std::string_view, 4> kKnownOpclassTypes{
-  catalog::kIncludedKind,
-  catalog::kIVFKind,
-  catalog::kHNSWKind,
-  catalog::kCurveKind,
+constexpr std::array<std::string_view, 5> kKnownOpclassTypes{
+  catalog::kIncludedKind, catalog::kIVFKind,       catalog::kHNSWKind,
+  catalog::kCurveKind,    catalog::kCartesianKind,
 };
 
 template<typename T>
@@ -646,18 +644,20 @@ uint32_t ParseCurveLimitOption(std::string_view kind,
 
 void ApplyCurveOpclass(
   std::string_view owner_label, const duckdb::LogicalType& value_type,
-  const duckdb::case_insensitive_map_t<duckdb::Value>& opts,
+  const duckdb::case_insensitive_map_t<duckdb::Value>& opts, bool cartesian,
   catalog::InvertedIndexField& entry) {
-  const auto kind = catalog::kCurveKind;
+  const auto kind = cartesian ? catalog::kCartesianKind : catalog::kCurveKind;
   irs::curve::Options options{
-    .dimensions =
-      static_cast<uint32_t>(duckdb::StructType::GetChildCount(value_type)),
+    .dimensions = cartesian ? 2
+                            : static_cast<uint32_t>(
+                                duckdb::StructType::GetChildCount(value_type)),
+    .cartesian = cartesian,
   };
   const uint32_t default_step =
-    irs::curve::DefaultLevelStep(options.dimensions);
+    cartesian ? 1 : irs::curve::DefaultLevelStep(options.dimensions);
   options.level_step = default_step;
   for (const auto& [key, raw_val] : opts) {
-    if (key == kLevelStepField) {
+    if (key == kLevelStepField && !cartesian) {
       options.level_step =
         ParseCurveLimitOption(kind, owner_label, key, raw_val, 1,
                               irs::curve::MaxLevelStep(options.dimensions));
@@ -681,15 +681,17 @@ void ApplyCurveOpclass(
     } else {
       THROW_SQL_ERROR(
         ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
-        ERR_MSG("Column '", owner_label, "': unknown ", kind, " option '", key,
-                "'. Accepted options: curve (string: ", kMortonCurve, "|",
-                kHilbertCurve, ", default ", kMortonCurve,
-                "), max_level (int 0-", irs::curve::kMaxLevel, ", default ",
-                irs::curve::Options{}.max_level, "), max_cells (int 1-",
-                irs::curve::kMaxCells, ", default ",
-                irs::curve::Options{}.max_cells, ")", ", level_step (int 1-",
-                irs::curve::MaxLevelStep(options.dimensions), ", default ",
-                default_step, ")"));
+        ERR_MSG(
+          "Column '", owner_label, "': unknown ", kind, " option '", key,
+          "'. Accepted options: curve (string: ", kMortonCurve, "|",
+          kHilbertCurve, ", default ", kMortonCurve, "), max_level (int 0-",
+          irs::curve::kMaxLevel, ", default ", irs::curve::Options{}.max_level,
+          "), max_cells (int 1-", irs::curve::kMaxCells, ", default ",
+          irs::curve::Options{}.max_cells, ")",
+          cartesian ? ""
+                    : absl::StrCat(", level_step (int 1-",
+                                   irs::curve::MaxLevelStep(options.dimensions),
+                                   ", default ", default_step, ")")));
     }
   }
   entry.curve = options;
@@ -955,7 +957,9 @@ struct KeyOpclass {
   bool IsAnn() const noexcept {
     return IsBuiltin(catalog::kIVFKind) || IsBuiltin(catalog::kHNSWKind);
   }
-  bool IsCurve() const noexcept { return IsBuiltin(catalog::kCurveKind); }
+  bool IsCurve() const noexcept {
+    return IsBuiltin(catalog::kCurveKind) || IsBuiltin(catalog::kCartesianKind);
+  }
   bool IsTokenizer() const noexcept {
     return !IsAnn() && !IsBuiltin(catalog::kIncludedKind);
   }
@@ -972,7 +976,7 @@ void ValidateInvertedIndexKey(std::string_view label,
     return;
   }
   if (opclass.IsCurve()) {
-    ValidateCurveType(label, type);
+    ValidateCurveType(label, type, opclass.IsBuiltin(catalog::kCartesianKind));
     return;
   }
   if (opclass.IsBuiltin(catalog::kIncludedKind)) {
@@ -1022,7 +1026,8 @@ void ApplyOpclassToEntry(
     return;
   }
   if (opclass.IsCurve()) {
-    ApplyCurveOpclass(label, value_type, *opclass.options, entry);
+    ApplyCurveOpclass(label, value_type, *opclass.options,
+                      opclass.IsBuiltin(catalog::kCartesianKind), entry);
     return;
   }
   if (opclass.IsBuiltin(catalog::kIVFKind)) {
@@ -1042,6 +1047,7 @@ void ApplyOpclassToEntry(
     if (opclass.name == catalog::kIVFKind ||
         opclass.name == catalog::kHNSWKind ||
         opclass.name == catalog::kCurveKind ||
+        opclass.name == catalog::kCartesianKind ||
         opclass.name == catalog::kIncludedKind) {
       ThrowUnknownBuiltinOpclass(opclass.name, label, schema_name);
     }

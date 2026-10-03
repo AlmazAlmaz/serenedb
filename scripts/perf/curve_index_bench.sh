@@ -131,10 +131,35 @@ for t in ind cor; do
 	echo "query ${t} one axis: rows ${rows}, max(id) ms table $(median_ms "SELECT max(id) ${s}") granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}") curve max_level=32 $(median_ms "SELECT max(id) ${d}")"
 done
 
-for t in ind cor; do
+sql "CREATE TABLE shapes(id BIGINT PRIMARY KEY, xmin DOUBLE, xmax DOUBLE, ymin DOUBLE, ymax DOUBLE, g GEOMETRY('SDB:CARTESIAN'))"
+sql "INSERT INTO shapes SELECT i, ST_XMin(b), ST_XMax(b), ST_YMin(b), ST_YMax(b), b::GEOMETRY('SDB:CARTESIAN')
+	FROM (SELECT i, ST_Buffer(ST_Point((i*7919)%100000/10.0, (i*104729)%100000/10.0), 2 + i%5) AS b
+	FROM generate_series(1, $((ROWS / 10))) g(i))"
+sql "INSERT INTO shapes SELECT ${ROWS} + i, x, x + 1024, 0, 1024,
+	('LINESTRING(' || x || ' 0,' || (x + 1024) || ' 1024)')::GEOMETRY('SDB:CARTESIAN')
+	FROM (SELECT i, i::DOUBLE / 8 AS x FROM generate_series(0, 8191) g(i))"
+b=$(seconds "CREATE INDEX shapes_bbox ON shapes USING inverted(id, xmin, xmax, ymin, ymax) INCLUDE (g)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) shapes")
+c=$(seconds "CREATE INDEX shapes_curve ON shapes USING inverted(id, g cartesian())${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) shapes")
+echo "build shapes: bbox ${b} s, cartesian ${c} s"
+
+for q in "POINT(512 512)" "POLYGON((4000 4000,4000 4100,4100 4100,4100 4000,4000 4000))" "LINESTRING(0 9000,9000 0)"; do
+	geom="'${q}'::GEOMETRY('SDB:CARTESIAN')"
+	IFS='|' read -r x0 x1 y0 y1 <<<"$(sql "SELECT ST_XMin(${geom}), ST_XMax(${geom}), ST_YMin(${geom}), ST_YMax(${geom})")"
+	b="FROM shapes_bbox WHERE xmin <= ${x1} AND xmax >= ${x0} AND ymin <= ${y1} AND ymax >= ${y0} AND ST_Intersects(g, ${geom})"
+	c="FROM shapes_curve WHERE ST_Intersects(g, ${geom})"
+	s="FROM shapes WHERE ST_Intersects(g, ${geom})"
+	expected=$(sql "SELECT count(*), max(id) ${s}")
+	if [[ "$(sql "SELECT count(*), max(id) ${b}")" != "${expected}" || "$(sql "SELECT count(*), max(id) ${c}")" != "${expected}" ]]; then
+		echo "result mismatch for ${q}" >&2
+		exit 1
+	fi
+	echo "query ${q}: rows $(sql "SELECT count(*) ${c}")/$(sql "SELECT count(*) ${s}"), max(id) ms table $(median_ms "SELECT max(id) ${s}") bbox $(median_ms "SELECT max(id) ${b}") cartesian $(median_ms "SELECT max(id) ${c}")"
+done
+
+for t in ind cor shapes; do
 	sql "VACUUM (COMPACT_TABLE) ${t}" >/dev/null
 done
-for index in ind_granular ind_curve ind_curve32 cor_granular cor_curve cor_curve32; do
+for index in ind_granular ind_curve ind_curve32 cor_granular cor_curve cor_curve32 shapes_bbox shapes_curve; do
 	size=$(sql "SELECT round(m.value / 1048576.0)::BIGINT FROM sdb_metrics m JOIN pg_class c ON c.oid = m.relation_id
 		WHERE c.relname = '${index}' AND m.metric = 'index_size'")
 	echo "size ${index}: ${size} MB"

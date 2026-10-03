@@ -26,6 +26,7 @@
 #include <iresearch/utils/down_cast.hpp>
 
 #include "connector/curve_index.h"
+#include "connector/geo_validate.h"
 
 namespace sdb::connector {
 namespace {
@@ -34,7 +35,9 @@ const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
   if (duckdb::BoundCastExpression::IsCast(expr)) {
     const auto& child = duckdb::BoundCastExpression::Child(
       expr.Cast<duckdb::BoundFunctionExpression>());
-    if (child.GetReturnType() == expr.GetReturnType()) {
+    if (child.GetReturnType() == expr.GetReturnType() ||
+        (child.GetReturnType().id() == duckdb::LogicalTypeId::GEOMETRY &&
+         expr.GetReturnType().id() == duckdb::LogicalTypeId::GEOMETRY)) {
       return PeelCast(child);
     }
   }
@@ -76,8 +79,13 @@ bool AddCurveCandidates(irs::BooleanFilter& root,
   }
   const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
   const auto& name = function.Function().GetName();
+  const bool point = name == "sdb_box_contains";
+  const bool geometry = name == "st_intersects" || name == "st_contains" ||
+                        name == "st_within" || name == "st_covers" ||
+                        name == "st_coveredby" || name == "st_touches" ||
+                        name == "st_crosses" || name == "st_overlaps";
   const auto& args = function.GetChildren();
-  if (name != "sdb_box_contains" || args.size() != 3) {
+  if ((!point && !geometry) || args.size() != (point ? 3 : 2)) {
     return false;
   }
   const auto find =
@@ -93,27 +101,54 @@ bool AddCurveCandidates(irs::BooleanFilter& root,
     }
     return result;
   };
-  auto info = find(*args[0]);
+  size_t field = 0;
+  auto info = find(*args[field]);
+  if (!info && geometry) {
+    field = 1;
+    info = find(*args[field]);
+  }
   if (!info) {
     return false;
   }
   const auto& options =
     irs::utils::downCast<CurveTokenizer>(*info->tokenizer.analyzer).Options();
-  duckdb::Value lower, upper;
-  if (!Fold(context, *args[1], lower) || !Fold(context, *args[2], upper)) {
+  if (options.cartesian != geometry) {
     return false;
   }
-  ValidateCurveBounds(info->logical_type, lower.type(), upper.type());
-  if (!IsClosedBox(lower, upper)) {
-    return false;
+  std::vector<irs::curve::Cell> cells;
+  irs::curve::Box box;
+  if (point) {
+    duckdb::Value lower, upper;
+    if (!Fold(context, *args[1], lower) || !Fold(context, *args[2], upper)) {
+      return false;
+    }
+    ValidateCurveBounds(info->logical_type, lower.type(), upper.type());
+    if (!IsClosedBox(lower, upper)) {
+      return false;
+    }
+    box = CurveBox(info->logical_type, lower, upper);
+    cells = irs::curve::CoverBox(box, options);
+  } else {
+    duckdb::Value shape;
+    if (!Fold(context, *args[1 - field], shape) ||
+        shape.type().id() != duckdb::LogicalTypeId::GEOMETRY) {
+      return false;
+    }
+    ValidateGeometryCartesian(info->logical_type, "Cartesian index");
+    if (duckdb::GeoType::HasCRS(shape.type())) {
+      ValidateGeometryCartesian(shape.type(), "Cartesian query");
+    }
+    cells = CoverCartesian(duckdb::StringValue::Get(shape), options);
+    if (cells.empty()) {
+      return false;
+    }
   }
-  const auto box = CurveBox(info->logical_type, lower, upper);
-  const auto cells = irs::curve::CoverBox(box, options);
   if (cells.empty()) {
     root.Add(std::make_unique<irs::Empty>(), irs::Occur::Must);
     return true;
   }
-  auto terms = irs::curve::PointQueryTerms(cells, box, options);
+  auto terms = point ? irs::curve::PointQueryTerms(cells, box, options)
+                     : irs::curve::Terms(cells, options, true);
   auto candidates = std::make_unique<irs::BooleanFilter>();
   candidates->SetScorer(&irs::ForceConstScore());
   for (const auto& term : terms) {

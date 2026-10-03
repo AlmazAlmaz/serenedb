@@ -210,6 +210,20 @@ TEST(SpaceFillingCurve, LevelStepNarrowsPointCandidates) {
   }
 }
 
+TEST(SpaceFillingCurve, CoarseIndexedCellsAndBoundaryQueries) {
+  for (bool hilbert : {false, true}) {
+    const Options options{.max_cells = 1, .hilbert = hilbert};
+    const Box indexed{{EncodeDouble(-100), EncodeDouble(-0.001)},
+                      {EncodeDouble(100), EncodeDouble(0.001)}};
+    const auto terms = Terms(CoverBox(indexed, options), options, false);
+    for (double x : {-100.0, 0.0, 100.0}) {
+      const Box query{{EncodeDouble(x), EncodeDouble(0)},
+                      {EncodeDouble(x), EncodeDouble(0)}};
+      EXPECT_TRUE(Match(terms, Terms(CoverBox(query, options), options, true)));
+    }
+  }
+}
+
 TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
   for (uint32_t level : {0, 1, 32, 63, 64}) {
     for (bool hilbert : {false, true}) {
@@ -227,6 +241,79 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
   }
 }
 
+TEST(SpaceFillingCurve, PointTermsMatchCellTerms) {
+  std::mt19937_64 random{1137};
+  for (uint32_t dimensions : {2, 3, 8}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t level : {0, 1, 17, 64}) {
+        const Options options{
+          .dimensions = dimensions, .max_level = level, .hilbert = hilbert};
+        Point point;
+        point.fill(0);
+        for (uint32_t axis = 0; axis < dimensions; ++axis) {
+          point[axis] = random();
+        }
+        std::vector<std::string> emitted;
+        PointTerms(point, options, [&](std::span<const uint8_t> term) {
+          emitted.emplace_back(term.begin(), term.end());
+        });
+        std::ranges::sort(emitted);
+        const Cell cell{point, level};
+        EXPECT_EQ(emitted, Terms(std::span{&cell, 1}, options, false));
+      }
+    }
+  }
+}
+
+std::vector<std::string> AllCellTerms(std::span<const Cell> cells,
+                                      const Options& options, bool query) {
+  std::vector<std::string> terms;
+  for (const auto& cell : cells) {
+    const auto code = Encode(cell.min, options.dimensions, options.hilbert);
+    for (uint32_t level = 0; level <= cell.level; ++level) {
+      terms.push_back(
+        Term(code, options.dimensions, level,
+             query || level == cell.level ? kLeafTerm : kAncestorTerm));
+    }
+    if (query) {
+      terms.push_back(
+        Term(code, options.dimensions, cell.level, kAncestorTerm));
+    }
+  }
+  std::ranges::sort(terms);
+  terms.erase(std::unique(terms.begin(), terms.end()), terms.end());
+  return terms;
+}
+
+TEST(SpaceFillingCurve, SharedAncestorsAreEmittedOnce) {
+  std::mt19937_64 random{631};
+  for (uint32_t dimensions : {2, 3}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t budget : {4, 64, 256}) {
+        const Options options{
+          .dimensions = dimensions, .max_cells = budget, .hilbert = hilbert};
+        for (uint32_t trial = 0; trial < 16; ++trial) {
+          Box box;
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            const auto center = random() >> 1;
+            box.min[axis] = center;
+            box.max[axis] = center + (random() >> (4 + random() % 56));
+          }
+          const auto cover = CoverBox(box, options);
+          for (bool query : {false, true}) {
+            size_t emitted = 0;
+            CellTerms(cover, options, query,
+                      [&](std::span<const uint8_t>) { ++emitted; });
+            const auto expected = AllCellTerms(cover, options, query);
+            EXPECT_EQ(Terms(cover, options, query), expected);
+            EXPECT_EQ(emitted, expected.size());
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   EXPECT_THROW(CoverBox({}, Options{.dimensions = 1}), std::invalid_argument);
   EXPECT_THROW(CoverBox({}, Options{.dimensions = 9}), std::invalid_argument);
@@ -235,6 +322,10 @@ TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   EXPECT_THROW(CoverBox({}, Options{.max_cells = 4097}), std::invalid_argument);
   EXPECT_THROW(CoverBox({}, Options{.level_step = 0}), std::invalid_argument);
   EXPECT_THROW(CoverBox({}, Options{.level_step = 8}), std::invalid_argument);
+  EXPECT_THROW(CoverBox({}, Options{.dimensions = 3, .cartesian = true}),
+               std::invalid_argument);
+  EXPECT_THROW(CoverBox({}, Options{.level_step = 2, .cartesian = true}),
+               std::invalid_argument);
   EXPECT_TRUE(CoverBox(Box{{1, 0}, {0, 1}}, Options{}).empty());
   const auto full = CoverBox(Box{{0, 0}, {UINT64_MAX, UINT64_MAX}}, Options{});
   ASSERT_EQ(full.size(), 1);

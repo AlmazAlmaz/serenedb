@@ -1,13 +1,16 @@
 control substitution on
 
 statement ok
-CREATE TABLE curve_metrics(id INTEGER PRIMARY KEY, x BIGINT, y BIGINT);
+CREATE TABLE curve_metrics(id INTEGER PRIMARY KEY, x BIGINT, y BIGINT, g GEOMETRY('SDB:CARTESIAN'));
 
 statement ok
 INSERT INTO curve_metrics VALUES
- (1,0,0),
- (2,100,100),
- (3,NULL,NULL);
+ (1,0,0,'POLYGON((-2 -2,-2 2,2 2,2 -2,-2 -2))'),
+ (2,100,100,'POLYGON((-2 -2,-2 2,2 2,2 -2,-2 -2),(-1 -1,1 -1,1 1,-1 1,-1 -1))'),
+ (3,NULL,NULL,NULL);
+
+statement ok
+CREATE INDEX curve_metrics_g ON curve_metrics USING inverted(id,g cartesian(max_level=0));
 
 statement ok
 CREATE INDEX curve_metrics_p ON curve_metrics USING inverted(id,(ROW(x,y)) curve(max_level=0)) INCLUDE(x,y);
@@ -17,6 +20,15 @@ VACUUM (REFRESH_TABLE) curve_metrics;
 
 statement ok
 SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_geometry.json';
+
+query
+SELECT max(id) FROM curve_metrics_g WHERE id<=2 AND ST_Intersects(g,'POINT(0 0)'::GEOMETRY('SDB:CARTESIAN'));
+----
+max
+1
 
 statement ok
 SET profiling_output = '${__TEST_DIR__}/curve_point.json';
@@ -29,6 +41,14 @@ max
 
 statement ok
 RESET enable_profiling;
+
+query
+SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+FROM read_text('${__TEST_DIR__}/curve_geometry.json') f, json_tree(f.content) j
+WHERE j.key='rows_scanned';
+----
+candidates
+2
 
 query
 SELECT max(CAST(j.atom AS BIGINT)) AS candidates
