@@ -117,7 +117,10 @@ were checked. A temporary executable linked `lindel` 0.1.1 to generate 16
 two-dimensional 64-bit Hilbert vectors, pinned in
 `SpaceFillingCurve.LindelHilbertReference`; lindel is not a dependency.
 
-## Checks
+## Earlier checks
+
+These checks used the earlier WSL build that produced the Release measurements
+above.
 
 - `SpaceFillingCurve` gtests under AddressSanitizer and UndefinedBehaviorSanitizer,
   including the lindel vectors, randomized no-false-negative boxes for every
@@ -127,3 +130,23 @@ two-dimensional 64-bit Hilbert vectors, pinned in
 - The full `sdb` sqllogic suite on a Debug build: 894 files pass; the five that
   fail need what the local setup lacks (embedded documentation, a TLS listener,
   an iceberg version hint) and do not touch these indexes.
+
+## Checks after updating to main
+
+On 2026-10-03, the numeric branch was rebuilt from main `2be6a28e7` with DuckDB
+`a10d8bfe2`, clang 21.1.8 and lld under WSL2. This Debug build uses the system
+allocator, no IPO, fault injection, and embedded documentation.
+
+- All 8 `SpaceFillingCurve` tests and 109 binary serialization tests pass.
+- All 284 index SQL files and the curve documentation example pass with both
+  wire protocols after generating the local Iceberg fixture.
+- The full regular `sdb` suite covers 1,284 files per wire protocol. The extended
+  run passes completely. The simple run initially has two environment failures:
+  the missing generated Iceberg fixture and TLS offered on the plain listener.
+  Generating the fixture with `gen_iceberg_fixture.py` and explicitly using
+  `sslmode=disable` on the plain listener makes both files pass in both protocols.
+- The crash-recovery test passes.
+- The 12 three-dimensional budget-64 microbenchmark cases return the same rows
+  as the exact intersection. For the independent fully bounded case, granular
+  ranges read 1,246 postings and curve terms read 4, returning the same 2 rows.
+  Debug CPU timings are not used to update the Release timing tables above.
