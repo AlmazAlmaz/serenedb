@@ -20,12 +20,19 @@
 
 #include "connector/curve_index.h"
 
+#include <absl/strings/str_cat.h>
+
 #include <duckdb/common/vector/flat_vector.hpp>
 #include <duckdb/common/vector/string_vector.hpp>
 #include <duckdb/common/vector/struct_vector.hpp>
 #include <iresearch/utils/assert.hpp>
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
+#include <spatial/modules/boost/boost_geometry.hpp>
+#include <spatial/modules/boost/boost_serde.hpp>
+
+#include "connector/cartesian_covering.h"
+#include "connector/geo_validate.h"
 
 namespace sdb::connector {
 namespace {
@@ -127,8 +134,19 @@ T Load(const duckdb::UnifiedVectorFormat& format, duckdb::idx_t index) {
 
 }  // namespace
 
-void ValidateCurveType(std::string_view label,
-                       const duckdb::LogicalType& type) {
+void ValidateCurveType(std::string_view label, const duckdb::LogicalType& type,
+                       bool cartesian) {
+  if (cartesian) {
+    if (type.id() != duckdb::LogicalTypeId::GEOMETRY) {
+      THROW_SQL_ERROR(
+        ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+        ERR_MSG("Column '", label,
+                "': cartesian opclass requires GEOMETRY('SDB:CARTESIAN'), got ",
+                type.ToString()));
+    }
+    ValidateGeometryCartesian(type, absl::StrCat("Column '", label, "'"));
+    return;
+  }
   if (!IsCurvePoint(type)) {
     THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
                     ERR_MSG("Column '", label, "': curve opclass requires ",
@@ -269,6 +287,12 @@ void PackCurvePoints(const duckdb::Vector& points, duckdb::idx_t count,
     out[row] = duckdb::StringVector::AddStringOrBlob(
       packed, bytes.data(), dimensions * sizeof(uint64_t));
   }
+}
+
+std::vector<irs::curve::Cell> CoverCartesian(
+  std::string_view wkb, const irs::curve::Options& options) {
+  return CoverCartesianGeometry(
+    duckdb::BoostSerde::Deserialize(wkb.data(), wkb.size()), options);
 }
 
 irs::curve::Point CurveTokenizer::UnpackPoint(

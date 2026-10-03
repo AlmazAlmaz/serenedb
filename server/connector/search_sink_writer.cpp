@@ -685,7 +685,7 @@ void SearchSinkInsertBaseImpl::SwitchFieldImpl(irs::field_id field_id,
     AppendToColumn(field_id, type, vec, count);
     return;
   }
-  if (entry && entry->curve) {
+  if (entry && entry->curve && !entry->curve->cartesian) {
     duckdb::Vector encoded{duckdb::LogicalType::BLOB, count};
     PackCurvePoints(vec, count, entry->curve->dimensions, encoded);
     if (is_stored) {
@@ -766,7 +766,8 @@ void SearchSinkInsertBaseImpl::SwitchFieldImpl(irs::field_id field_id,
     case duckdb::LogicalTypeId::GEOMETRY: {
       auto& tokenizer = ResolveTokenizer(field_id);
       _field.PrepareForStringValue(field_id, tokenizer);
-      if (kind == duckdb::LogicalTypeId::GEOMETRY) {
+      if (kind == duckdb::LogicalTypeId::GEOMETRY &&
+          irs::analysis::GeoTokenizer::IsGeoTokenizer(*tokenizer.analyzer)) {
         irs::analysis::GeoTokenizer::Cast(*tokenizer.analyzer)
           .SetWkbInput(true);
       }
