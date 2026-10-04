@@ -144,6 +144,28 @@ TEST(CartesianCovering, NonfiniteVerticesCoverTheWholeDomain) {
   }
 }
 
+BoostPolygon Square(const BoostPoint& center, double half, double hole) {
+  BoostPolygon square;
+  const auto ring = [&](double size) {
+    return std::vector<BoostPoint>{{center.x() - size, center.y() - size},
+                                   {center.x() - size, center.y() + size},
+                                   {center.x() + size, center.y() + size},
+                                   {center.x() + size, center.y() - size},
+                                   {center.x() - size, center.y() - size}};
+  };
+  for (const auto& vertex : ring(half)) {
+    square.outer().push_back(vertex);
+  }
+  if (hole > 0) {
+    square.inners().emplace_back();
+    for (const auto& vertex : ring(half * hole)) {
+      square.inners().back().push_back(vertex);
+    }
+  }
+  duckdb::bg::correct(square);
+  return square;
+}
+
 TEST(CartesianCovering, RandomShapesHaveNoFalseNegatives) {
   std::mt19937_64 random{1137};
   for (const double scale : {1e-3, 1.0, 1e6}) {
@@ -164,7 +186,16 @@ TEST(CartesianCovering, RandomShapesHaveNoFalseNegatives) {
       shapes.emplace_back(triangle);
       shapes.emplace_back(a);
       shapes.emplace_back(BoostLinestring{a, BoostPoint{a.x(), c.y()}});
-      for (const auto& vertex : {a, b, c, BoostPoint{a.x(), c.y()}}) {
+      const auto half = std::abs(b.x() - a.x()) / 2;
+      shapes.emplace_back(Square(a, half, 0.5));
+      shapes.emplace_back(duckdb::BoostMultiPolygon{Square(a, half / 4, 0),
+                                                    Square(b, half / 4, 0.5)});
+      shapes.emplace_back(std::vector<duckdb::BoostSingle>{
+        c, BoostLinestring{a, b}, Square(b, half / 2, 0.5)});
+      for (const auto& vertex :
+           {a, b, c, BoostPoint{a.x(), c.y()},
+            BoostPoint{a.x() + half / 2, a.y()},
+            BoostPoint{a.x() + half * 3 / 4, a.y() - half / 4}}) {
         queries.emplace_back(vertex);
       }
     }

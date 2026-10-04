@@ -169,6 +169,7 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
   struct Pending {
     Cell cell;
     Relation relation;
+    uint32_t context;
     long double priority;
     uint64_t order;
   };
@@ -181,12 +182,13 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
   uint64_t order = 0;
   std::vector<Cell> result;
   const Cell root;
-  const auto root_relation = classify(root);
+  uint32_t root_context = 0;
+  const auto root_relation = classify(root, root_context);
   if (root_relation == Relation::Outside) {
     return result;
   }
-  pending.push(
-    {root, root_relation, static_cast<long double>(priority(root)), order++});
+  pending.push({root, root_relation, root_context,
+                static_cast<long double>(priority(root)), order++});
   std::vector<Pending> children;
   while (!pending.empty()) {
     const auto top = pending.top();
@@ -196,9 +198,11 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
       result.push_back(cell);
       continue;
     }
+    const auto room = options.max_cells - pending.size() - result.size();
     children.clear();
     const auto bit = uint64_t{1} << (63 - cell.level);
-    for (uint32_t child = 0; child < (uint32_t{1} << options.dimensions);
+    for (uint32_t child = 0;
+         child < (uint32_t{1} << options.dimensions) && children.size() <= room;
          ++child) {
       Cell next{cell.min, cell.level + 1};
       for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
@@ -206,12 +210,13 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
           next.min[axis] |= bit;
         }
       }
-      const auto next_relation = classify(next);
+      auto context = top.context;
+      const auto next_relation = classify(next, context);
       if (next_relation != Relation::Outside) {
-        children.push_back({next, next_relation, 0, 0});
+        children.push_back({next, next_relation, context, 0, 0});
       }
     }
-    if (children.size() + pending.size() + result.size() > options.max_cells) {
+    if (children.size() > room) {
       result.push_back(cell);
       continue;
     }
@@ -231,7 +236,7 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify) {
 }
 
 inline std::vector<Cell> CoverBox(const Box& box, const Options& options) {
-  return Cover(options, [&](const Cell& cell) {
+  return Cover(options, [&](const Cell& cell, uint32_t&) {
     return Classify(cell, box, options.dimensions);
   });
 }

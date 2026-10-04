@@ -20,6 +20,7 @@
 
 #include <benchmark/benchmark.h>
 
+#include <numbers>
 #include <spatial/modules/boost/boost_geometry.hpp>
 #include <unordered_map>
 
@@ -95,5 +96,46 @@ BENCHMARK(CartesianRanges)
   ->Args({64, 0})
   ->Args({256, 0})
   ->Args({64, 1});
+
+duckdb::BoostGeometry Circle(double x, double y, double radius) {
+  duckdb::BoostPolygon polygon;
+  for (int i = 0; i <= 32; ++i) {
+    const auto angle = 2 * std::numbers::pi * (i % 32) / 32;
+    polygon.outer().emplace_back(x + radius * std::cos(angle),
+                                 y + radius * std::sin(angle));
+  }
+  duckdb::bg::correct(polygon);
+  return duckdb::BoostGeometry{std::move(polygon)};
+}
+
+void CartesianCover(benchmark::State& state) {
+  const bool line = state.range(0) != 0;
+  const irs::curve::Options options{
+    .max_cells = static_cast<uint32_t>(state.range(1)), .cartesian = true};
+  std::vector<duckdb::BoostGeometry> shapes;
+  for (uint32_t id = 0; id < 64; ++id) {
+    const auto x = (id * 7919) % 100000 / 10.0;
+    const auto y = (id * 104729) % 100000 / 10.0;
+    if (line) {
+      shapes.emplace_back(duckdb::BoostLinestring{{x, 0}, {x + 1024, 1024}});
+    } else {
+      shapes.push_back(Circle(x, y, 2 + id % 5));
+    }
+  }
+  uint64_t cells = 0;
+  for (auto _ : state) {
+    cells = 0;
+    for (const auto& shape : shapes) {
+      cells += sdb::connector::CoverCartesianGeometry(shape, options).size();
+    }
+    benchmark::DoNotOptimize(cells);
+  }
+  state.SetItemsProcessed(state.iterations() * shapes.size());
+  state.counters["cells"] = static_cast<double>(cells) / shapes.size();
+}
+
+BENCHMARK(CartesianCover)
+  ->ArgNames({"line", "budget"})
+  ->ArgsProduct({{0, 1}, {1, 8, 64, 256}});
 
 }  // namespace

@@ -20,6 +20,9 @@
 
 #include "connector/cartesian_covering.h"
 
+#include <absl/algorithm/container.h>
+
+#include <bit>
 #include <spatial/modules/boost/boost_ops.hpp>
 #include <spatial/modules/boost/boost_serde.hpp>
 
@@ -35,57 +38,187 @@ using Segment = bg::model::segment<duckdb::BoostPoint>;
 
 constexpr int kWidenSteps = 4;
 
-double Widen(double value, double direction) {
+double Widen(double value, bool up) {
   for (int step = 0; step < kWidenSteps; ++step) {
-    value = std::nextafter(value, direction);
+    if (value == 0) {
+      value = up ? std::numeric_limits<double>::denorm_min()
+                 : -std::numeric_limits<double>::denorm_min();
+    } else {
+      value = std::bit_cast<double>(std::bit_cast<uint64_t>(value) +
+                                    ((value > 0) == up ? 1 : -1));
+    }
   }
   return value;
 }
 
-bool Intersects(const duckdb::BoostSingle& part, const Rectangle& rectangle) {
-  return boost::variant2::visit(
-    [&](const auto& shape) { return bg::intersects(shape, rectangle); }, part);
-}
-
-template<typename Ring>
-bool RingTouches(const Ring& ring, const Rectangle& rectangle) {
-  for (size_t i = 1; i < ring.size(); ++i) {
-    if (bg::intersects(Segment{ring[i - 1], ring[i]}, rectangle)) {
-      return true;
+class ShapeClassifier {
+ public:
+  ShapeClassifier(const duckdb::BoostGeometry& geometry,
+                  const irs::curve::Box& box)
+    : _box{box}, _areal{!geometry.IsCollection()} {
+    for (const auto& part : geometry.Parts()) {
+      boost::variant2::visit([&](const auto& shape) { Add(shape); }, part);
     }
-  }
-  return false;
-}
-
-bool Covers(const duckdb::BoostPolygon& polygon, const Rectangle& rectangle) {
-  if (RingTouches(polygon.outer(), rectangle)) {
-    return false;
-  }
-  for (const auto& ring : polygon.inners()) {
-    if (RingTouches(ring, rectangle)) {
-      return false;
+    _clips.emplace_back(0, 0);
+    double magnitude = 1;
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+      magnitude =
+        std::max({magnitude, std::abs(irs::curve::DecodeDouble(box.min[axis])),
+                  std::abs(irs::curve::DecodeDouble(box.max[axis]))});
     }
+    _slack = 4 * std::numeric_limits<double>::epsilon() * magnitude;
   }
-  duckdb::BoostPoint center;
-  bg::centroid(rectangle, center);
-  return bg::within(center, polygon);
-}
 
-bool Covers(const duckdb::BoostSingle& part, const Rectangle& rectangle) {
-  if (const auto* polygon =
-        boost::variant2::get_if<duckdb::BoostPolygon>(&part)) {
-    return Covers(*polygon, rectangle);
-  }
-  if (const auto* polygons =
-        boost::variant2::get_if<duckdb::BoostMultiPolygon>(&part)) {
-    for (const auto& polygon : *polygons) {
-      if (Covers(polygon, rectangle)) {
-        return true;
+  irs::curve::Relation operator()(const irs::curve::Cell& cell,
+                                  uint32_t& context) {
+    const auto relation = irs::curve::Classify(cell, _box, 2);
+    if (relation == irs::curve::Relation::Outside) {
+      return irs::curve::Relation::Outside;
+    }
+    if (cell.min[0] <= _box.min[0] && cell.Max(0) >= _box.max[0] &&
+        cell.min[1] <= _box.min[1] && cell.Max(1) >= _box.max[1]) {
+      return irs::curve::Relation::Boundary;
+    }
+    const auto lower = [&](uint32_t axis) {
+      return Widen(
+        irs::curve::DecodeDouble(std::max(cell.min[axis], _box.min[axis])),
+        false);
+    };
+    const auto upper = [&](uint32_t axis) {
+      return Widen(
+        irs::curve::DecodeDouble(std::min(cell.Max(axis), _box.max[axis])),
+        true);
+    };
+    const Rectangle rectangle{{lower(0), lower(1)}, {upper(0), upper(1)}};
+    const auto begin = static_cast<uint32_t>(_clipped.size());
+    if (context == 0) {
+      for (uint32_t edge = 0; edge < _edges.size(); ++edge) {
+        if (Touches(_edges[edge], rectangle)) {
+          _clipped.push_back(edge);
+        }
+      }
+    } else {
+      const auto [from, to] = _clips[context];
+      for (auto i = from; i < to; ++i) {
+        if (Touches(_edges[_clipped[i]], rectangle)) {
+          _clipped.push_back(_clipped[i]);
+        }
       }
     }
+    const auto end = static_cast<uint32_t>(_clipped.size());
+    if (begin == end) {
+      if (!absl::c_any_of(_polygons, [&](const auto* polygon) {
+            return Locate(rectangle.min_corner(), *polygon) >= 0;
+          })) {
+        return irs::curve::Relation::Outside;
+      }
+      if (relation == irs::curve::Relation::Inside && _areal) {
+        duckdb::BoostPoint center;
+        bg::centroid(rectangle, center);
+        if (absl::c_any_of(_polygons, [&](const auto* polygon) {
+              return Locate(center, *polygon) == 1;
+            })) {
+          return irs::curve::Relation::Inside;
+        }
+      }
+    }
+    context = static_cast<uint32_t>(_clips.size());
+    _clips.emplace_back(begin, end);
+    return irs::curve::Relation::Boundary;
   }
-  return false;
-}
+
+ private:
+  struct Edge {
+    Segment segment;
+    bool point;
+  };
+
+  bool Touches(const Edge& edge, const Rectangle& rectangle) const {
+    const auto& a = edge.segment.first;
+    const auto& b = edge.segment.second;
+    if (std::max(a.x(), b.x()) < rectangle.min_corner().x() - _slack ||
+        std::min(a.x(), b.x()) > rectangle.max_corner().x() + _slack ||
+        std::max(a.y(), b.y()) < rectangle.min_corner().y() - _slack ||
+        std::min(a.y(), b.y()) > rectangle.max_corner().y() + _slack) {
+      return false;
+    }
+    return edge.point ? bg::covered_by(a, rectangle)
+                      : bg::intersects(edge.segment, rectangle);
+  }
+
+  template<typename Ring>
+  int Locate(const duckdb::BoostPoint& point, const Ring& ring) const {
+    using Winding = bg::strategy::within::cartesian_winding<>;
+    if (ring.size() < 4) {
+      return -1;
+    }
+    Winding::state_type state;
+    for (size_t i = 1; i < ring.size(); ++i) {
+      const auto& a = ring[i - 1];
+      const auto& b = ring[i];
+      if (std::max(a.x(), b.x()) < point.x() - _slack ||
+          std::min(a.x(), b.x()) > point.x() + _slack) {
+        continue;
+      }
+      if (!Winding::apply(point, a, b, state)) {
+        break;
+      }
+    }
+    return Winding::result(state);
+  }
+
+  int Locate(const duckdb::BoostPoint& point,
+             const duckdb::BoostPolygon& polygon) const {
+    const auto code = Locate(point, polygon.outer());
+    if (code == 1) {
+      for (const auto& ring : polygon.inners()) {
+        if (const auto inner = Locate(point, ring); inner != -1) {
+          return -inner;
+        }
+      }
+    }
+    return code;
+  }
+
+  void Add(const duckdb::BoostPoint& point) {
+    _edges.push_back({{point, point}, true});
+  }
+
+  template<typename Path>
+  void AddPath(const Path& path) {
+    if (path.size() == 1) {
+      Add(path.front());
+    }
+    for (size_t i = 1; i < path.size(); ++i) {
+      _edges.push_back({{path[i - 1], path[i]}, false});
+    }
+  }
+
+  void Add(const duckdb::BoostLinestring& line) { AddPath(line); }
+
+  void Add(const duckdb::BoostPolygon& polygon) {
+    AddPath(polygon.outer());
+    for (const auto& ring : polygon.inners()) {
+      AddPath(ring);
+    }
+    _polygons.push_back(&polygon);
+  }
+
+  template<typename Multi>
+  void Add(const Multi& shapes) {
+    for (const auto& shape : shapes) {
+      Add(shape);
+    }
+  }
+
+  const irs::curve::Box _box;
+  const bool _areal;
+  double _slack;
+  std::vector<Edge> _edges;
+  std::vector<const duckdb::BoostPolygon*> _polygons;
+  std::vector<uint32_t> _clipped;
+  std::vector<std::pair<uint32_t, uint32_t>> _clips;
+};
 
 }  // namespace
 
@@ -125,46 +258,8 @@ std::vector<irs::curve::Cell> CoverCartesianGeometry(
   const irs::curve::Box box{
     {irs::curve::EncodeDouble(x0), irs::curve::EncodeDouble(y0)},
     {irs::curve::EncodeDouble(x1), irs::curve::EncodeDouble(y1)}};
-  const bool areal = !geometry.IsCollection();
   return irs::curve::Cover(
-    options,
-    [&](const irs::curve::Cell& cell) {
-      const auto relation = irs::curve::Classify(cell, box, 2);
-      if (relation == irs::curve::Relation::Outside) {
-        return irs::curve::Relation::Outside;
-      }
-      if (cell.min[0] <= box.min[0] && cell.Max(0) >= box.max[0] &&
-          cell.min[1] <= box.min[1] && cell.Max(1) >= box.max[1]) {
-        return irs::curve::Relation::Boundary;
-      }
-      const auto lower = [&](uint32_t axis) {
-        return Widen(
-          irs::curve::DecodeDouble(std::max(cell.min[axis], box.min[axis])),
-          -std::numeric_limits<double>::infinity());
-      };
-      const auto upper = [&](uint32_t axis) {
-        return Widen(
-          irs::curve::DecodeDouble(std::min(cell.Max(axis), box.max[axis])),
-          std::numeric_limits<double>::infinity());
-      };
-      const Rectangle rectangle{{lower(0), lower(1)}, {upper(0), upper(1)}};
-      bool intersects = false;
-      for (const auto& part : geometry.Parts()) {
-        if (Intersects(part, rectangle)) {
-          intersects = true;
-          break;
-        }
-      }
-      if (!intersects) {
-        return irs::curve::Relation::Outside;
-      }
-      if (relation == irs::curve::Relation::Inside && areal &&
-          Covers(geometry.Single(), rectangle)) {
-        return irs::curve::Relation::Inside;
-      }
-      return irs::curve::Relation::Boundary;
-    },
-    [&](const irs::curve::Cell& cell) {
+    options, ShapeClassifier{geometry, box}, [&](const irs::curve::Cell& cell) {
       long double size = 1;
       for (uint32_t axis = 0; axis < 2; ++axis) {
         const long double lo =
