@@ -37,6 +37,8 @@ using Rectangle = bg::model::box<duckdb::BoostPoint>;
 using Segment = bg::model::segment<duckdb::BoostPoint>;
 
 constexpr int kWidenSteps = 4;
+constexpr size_t kClipBudgetBase = size_t{1} << 16;
+constexpr size_t kClipBudgetPerEdge = 16;
 
 double Widen(double value, bool up) {
   for (int step = 0; step < kWidenSteps; ++step) {
@@ -60,6 +62,7 @@ class ShapeClassifier {
       boost::variant2::visit([&](const auto& shape) { Add(shape); }, part);
     }
     _clips.emplace_back(0, 0);
+    _clip_budget = kClipBudgetBase + kClipBudgetPerEdge * _edges.size();
     double magnitude = 1;
     for (uint32_t axis = 0; axis < 2; ++axis) {
       magnitude =
@@ -90,7 +93,7 @@ class ShapeClassifier {
         true);
     };
     const Rectangle rectangle{{lower(0), lower(1)}, {upper(0), upper(1)}};
-    const auto begin = static_cast<uint32_t>(_clipped.size());
+    const auto begin = _clipped.size();
     if (context == 0) {
       for (uint32_t edge = 0; edge < _edges.size(); ++edge) {
         if (Touches(_edges[edge], rectangle)) {
@@ -105,7 +108,7 @@ class ShapeClassifier {
         }
       }
     }
-    const auto end = static_cast<uint32_t>(_clipped.size());
+    const auto end = _clipped.size();
     if (begin == end) {
       if (!absl::c_any_of(_polygons, [&](const auto* polygon) {
             return Locate(rectangle.min_corner(), *polygon) >= 0;
@@ -121,6 +124,11 @@ class ShapeClassifier {
           return irs::curve::Relation::Inside;
         }
       }
+    }
+    if (end > _clip_budget) {
+      _clipped.resize(begin);
+      context = 0;
+      return irs::curve::Relation::Boundary;
     }
     context = static_cast<uint32_t>(_clips.size());
     _clips.emplace_back(begin, end);
@@ -214,10 +222,11 @@ class ShapeClassifier {
   const irs::curve::Box _box;
   const bool _areal;
   double _slack;
+  size_t _clip_budget;
   std::vector<Edge> _edges;
   std::vector<const duckdb::BoostPolygon*> _polygons;
   std::vector<uint32_t> _clipped;
-  std::vector<std::pair<uint32_t, uint32_t>> _clips;
+  std::vector<std::pair<size_t, size_t>> _clips;
 };
 
 }  // namespace

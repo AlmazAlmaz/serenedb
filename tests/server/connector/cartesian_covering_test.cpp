@@ -133,6 +133,21 @@ TEST(CartesianCovering, DoesNotSpendBudgetOnSubnormalStrips) {
   EXPECT_LT(candidates, 17);
 }
 
+TEST(CartesianCovering, ManyOverlappingEdgesKeepCandidates) {
+  const auto far = 512 + std::ldexp(1.0, -31);
+  BoostLinestring line;
+  for (int i = 0; i <= 1200; ++i) {
+    line.emplace_back(i % 2 ? far : 512.0, 512.0);
+  }
+  const BoostGeometry shape{line};
+  const Options options{.max_cells = 128, .cartesian = true};
+  EXPECT_GT(sdb::connector::CoverCartesianGeometry(shape, options).size(), 1);
+  for (const double x : {512.0, 512 + std::ldexp(1.0, -33), far}) {
+    EXPECT_TRUE(Candidate(shape, BoostGeometry{BoostPoint{x, 512}}, options));
+  }
+  EXPECT_FALSE(Candidate(shape, BoostGeometry{BoostPoint{513, 512}}, options));
+}
+
 TEST(CartesianCovering, NonfiniteVerticesCoverTheWholeDomain) {
   for (const double bad : {INFINITY, -INFINITY, NAN}) {
     const BoostGeometry line{BoostLinestring{{0, 0}, {1, bad}}};
