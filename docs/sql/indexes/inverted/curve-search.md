@@ -78,6 +78,15 @@ instead of trusting topology-based pruning. Shapes with nonfinite XY
 coordinates or coordinate magnitudes above `1e100` also receive a root
 covering, so every query rechecks them.
 
+The covering follows the exact geometry, while Boost.Geometry compares
+coordinates and orientations with a tolerance relative to the coordinates
+that never drops below about `2.2e-16` in absolute terms. Below a magnitude
+of 1 the predicates can therefore report contact between shapes that are
+slightly apart, and the index can miss such rows that a scan returns: a point
+`2e-9` away from a segment `1.4e-8` long touches it for Boost, and so does
+`POINT(1e-16 0)` for `POINT(0 0)`. At larger magnitudes the tolerance stays
+below the few ulps by which every covering cell is widened.
+
 The geographic `encode_geojson` and `encode_geopoint` dictionaries continue to
 use S2 and their existing CRS84 contract. They reject `SDB:CARTESIAN`; the
 Cartesian opclass rejects CRS84. The two paths do not reinterpret each other's
