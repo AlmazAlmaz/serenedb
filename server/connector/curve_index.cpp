@@ -85,7 +85,7 @@ constexpr std::string_view kCurvePointTypes =
   "coordinates";
 
 bool IsCurveTuple(const duckdb::LogicalType& type) {
-  if (type.id() != duckdb::LogicalTypeId::STRUCT) {
+  if (!duckdb::StructType::IsStruct(type)) {
     return false;
   }
   const auto& children = duckdb::StructType::GetChildTypes(type);
@@ -173,7 +173,7 @@ void ValidateCurveBounds(const duckdb::LogicalType& point,
 CurveTuples::CurveTuples(const duckdb::Vector& tuples,
                          const duckdb::LogicalType& point) {
   tuples.ToUnifiedFormat(_tuples);
-  if (tuples.GetType().id() != duckdb::LogicalTypeId::STRUCT) {
+  if (!duckdb::StructType::IsStruct(tuples.GetType())) {
     return;
   }
   const auto& entries = duckdb::StructVector::GetEntries(tuples);
