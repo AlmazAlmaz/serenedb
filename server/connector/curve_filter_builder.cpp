@@ -31,8 +31,9 @@ namespace sdb::connector {
 namespace {
 
 const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
-  if (expr.GetExpressionClass() == duckdb::ExpressionClass::BOUND_CAST) {
-    const auto& child = expr.Cast<duckdb::BoundCastExpression>().Child();
+  if (duckdb::BoundCastExpression::IsCast(expr)) {
+    const auto& child = duckdb::BoundCastExpression::Child(
+      expr.Cast<duckdb::BoundFunctionExpression>());
     if (child.GetReturnType() == expr.GetReturnType()) {
       return PeelCast(child);
     }
