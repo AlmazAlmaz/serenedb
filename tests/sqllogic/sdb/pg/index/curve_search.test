@@ -218,13 +218,13 @@ db error: ERROR: sdb_box_contains: bound DOUBLE does not match coordinate 1 of t
 statement error
 SELECT sdb_box_contains(ROW(1, 2), ROW(1, 2, 3), ROW(3, 4, 5));
 ----
-db error: ERROR: sdb_box_contains: bounds must be ROWs with 2 coordinates like the point STRUCT(INTEGER, INTEGER), got STRUCT(INTEGER, INTEGER, INTEGER)
+db error: ERROR: sdb_box_contains: bounds must be ROWs with 2 coordinates like the point TUPLE(INTEGER, INTEGER), got TUPLE(INTEGER, INTEGER, INTEGER)
 
 
 statement error
 SELECT sdb_box_contains(ROW('a', 2), ROW(1, 2), ROW(3, 4));
 ----
-db error: ERROR: sdb_box_contains: the point must be a ROW of 2 to 8 integer, FLOAT, DOUBLE, DATE, TIMESTAMP or TIMESTAMPTZ coordinates, got STRUCT(VARCHAR, INTEGER)
+db error: ERROR: sdb_box_contains: the point must be a ROW of 2 to 8 integer, FLOAT, DOUBLE, DATE, TIMESTAMP or TIMESTAMPTZ coordinates, got TUPLE(VARCHAR, INTEGER)
 
 
 query
