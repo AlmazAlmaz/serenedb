@@ -626,6 +626,7 @@ target_include_directories(
 ## duckdb
 ################################################################################
 
+set(DUCKDB_OPTIMIZATION_PROFILE NONE CACHE STRING "" FORCE)
 set(BUILD_SHELL FALSE CACHE BOOL "" FORCE)
 set(BUILD_SHELL_STATIC_LIB TRUE CACHE BOOL "" FORCE)
 option(
