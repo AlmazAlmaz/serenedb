@@ -189,5 +189,3 @@ BENCHMARK(CurveRanges)
   ->ArgNames({"d", "correlated", "partial", "budget", "method"});
 
 }  // namespace
-
-BENCHMARK_MAIN();
