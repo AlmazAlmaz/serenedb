@@ -99,7 +99,7 @@ add_bench(clustering)
 add_bench(curve_ranges)
 add_bench(cartesian_ranges)
 target_include_directories(
-    serenedb-bench-micro-cartesian_ranges
+    serenedb-bench-micro
     PRIVATE ${CMAKE_SOURCE_DIR}/third_party/duckdb_spatial/src
 )
 add_bench(simd_base64)

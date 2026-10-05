@@ -97,5 +97,3 @@ BENCHMARK(CartesianRanges)
   ->Args({64, 1});
 
 }  // namespace
-
-BENCHMARK_MAIN();
