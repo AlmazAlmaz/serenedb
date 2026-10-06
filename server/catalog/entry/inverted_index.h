@@ -98,6 +98,7 @@ inline constexpr std::string_view kIncludedKind = "included";
 inline constexpr std::string_view kIVFKind = "ivf";
 inline constexpr std::string_view kHNSWKind = "hnsw";
 inline constexpr std::string_view kCurveKind = "curve";
+inline constexpr std::string_view kCartesianKind = "cartesian";
 
 struct InvertedIndexKey : persistence::KeyRecord {
   std::string expression_text;

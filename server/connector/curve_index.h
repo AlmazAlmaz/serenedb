@@ -28,7 +28,8 @@
 
 namespace sdb::connector {
 
-void ValidateCurveType(std::string_view label, const duckdb::LogicalType& type);
+void ValidateCurveType(std::string_view label, const duckdb::LogicalType& type,
+                       bool cartesian);
 void ValidateCurveBounds(const duckdb::LogicalType& point,
                          const duckdb::LogicalType& lower,
                          const duckdb::LogicalType& upper);
@@ -65,6 +66,8 @@ irs::curve::Box CurveBox(const duckdb::LogicalType& point,
                          const duckdb::Value& upper);
 void PackCurvePoints(const duckdb::Vector& points, duckdb::idx_t count,
                      uint32_t dimensions, duckdb::Vector& packed);
+std::vector<irs::curve::Cell> CoverCartesian(
+  std::string_view wkb, const irs::curve::Options& options);
 
 class CurveTokenizer final
   : public irs::analysis::TypedTokenizer<CurveTokenizer> {
@@ -87,6 +90,11 @@ class CurveTokenizer final
     const auto emit = [&](std::span<const uint8_t> term) {
       sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
     };
+    if (_options.cartesian) {
+      irs::curve::CellTerms(CoverCartesian(bytes, _options), _options, false,
+                            emit);
+      return true;
+    }
     irs::curve::PointTerms(UnpackPoint(bytes), _options, emit);
     return true;
   }
