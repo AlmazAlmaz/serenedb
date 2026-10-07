@@ -333,6 +333,11 @@ elseif(ARCH_AMD64)
 endif()
 add_subdirectory(OpenBLAS)
 target_link_libraries(sdb_blas INTERFACE openblas)
+if(ARCH_AMD64)
+    foreach(_core SKYLAKEX COOPERLAKE SAPPHIRERAPIDS)
+        target_compile_options(kernel_${_core} PRIVATE $<$<CONFIG:Debug>:-O2>)
+    endforeach()
+endif()
 
 ################################################################################
 ### faiss library
