@@ -727,6 +727,12 @@ target_include_directories(
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
 )
 
+target_include_directories(
+    iceberg_catalog_rest_storage_authorization
+    SYSTEM
+    PRIVATE ${OPENSSL_INCLUDE_DIR}
+)
+
 # Link extension objects that aren't automatically included in duckdb_static
 target_link_libraries(
     duckdb_static
