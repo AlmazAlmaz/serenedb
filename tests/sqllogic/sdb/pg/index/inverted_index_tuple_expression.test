@@ -50,4 +50,3 @@ id	payload
 
 statement ok
 DROP TABLE tuple_base;
-
