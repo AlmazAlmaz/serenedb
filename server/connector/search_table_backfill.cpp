@@ -213,10 +213,11 @@ struct FeedSliceTask final : duckdb::BaseExecutorTask {
       snapshot_tick{snapshot_tick_in},
       progress{progress_in} {}
 
-  void ExecuteTask() final {
-    for (const auto* sub : slice.segments) {
-      const auto fed = FeedSegment(context, *sub, slice.source, *slice.sink,
-                                   target, snapshot_tick);
+  duckdb::TaskExecutionResult ExecuteTaskStep() final {
+    if (next < slice.segments.size()) {
+      const auto fed =
+        FeedSegment(context, *slice.segments[next++], slice.source, *slice.sink,
+                    target, snapshot_tick);
       if (progress) {
         pg::ProgressMetrics::Add(progress->tuples_processed,
                                  static_cast<int64_t>(fed));
@@ -226,15 +227,17 @@ struct FeedSliceTask final : duckdb::BaseExecutorTask {
           ERR_CODE(ERRCODE_QUERY_CANCELED),
           ERR_MSG("canceled while rebuilding search table ", target.table_id));
       }
+      return duckdb::TaskExecutionResult::TASK_NOT_FINISHED;
     }
     if (target.shard->TruncatedAfter(snapshot_tick)) {
-      return;
+      return duckdb::TaskExecutionResult::TASK_FINISHED;
     }
     // On the worker, like SereneDBSearchInsert::Combine: serialising this tail
     // costs more than the feeding it follows.
     for (const auto& segment : slice.trx.FlushAndFsync()) {
       slice.adopted.push_back(segment.filename);
     }
+    return duckdb::TaskExecutionResult::TASK_FINISHED;
   }
 
   std::string TaskType() const final { return "SearchBackfillSlice"; }
@@ -244,6 +247,7 @@ struct FeedSliceTask final : duckdb::BaseExecutorTask {
   Slice& slice;
   uint64_t snapshot_tick;
   pg::ProgressMetrics* progress;
+  size_t next = 0;
 };
 
 enum class SwapResult {
@@ -316,18 +320,20 @@ bool RebuildGroup(duckdb::ClientContext& context,
   // the delete-log rather than the adopt tick is what saves the row.
   SDB_WAIT_ON_FAILURE("pause_search_backfill_before_swap");
 
-  // Drain and swap under one hold of the delete log, so no removal can be
-  // lost while we are swapping
-  const auto swapped = shard.SwapWithDrainedDeletes(
-    [&](std::vector<int64_t> rowids, uint64_t truncate_tick) {
+  bool truncated = false;
+  const bool replaced_ok = shard.ReplaceSegments(
+    replaced, adopted, [&](irs::IndexWriter::QueryContext::FilterPtr& removal) {
+      auto [rowids, truncate_tick] = shard.DrainDeleteLog();
       if (truncate_tick > snapshot_tick) {
-        return SwapResult::Truncated;
+        truncated = true;
+        return false;
       }
-      return shard.ReplaceSegments(replaced, adopted,
-                                   MakeRemoval(std::move(rowids)))
-               ? SwapResult::Swapped
-               : SwapResult::Failed;
+      removal = MakeRemoval(std::move(rowids));
+      return true;
     });
+  const auto swapped = truncated     ? SwapResult::Truncated
+                       : replaced_ok ? SwapResult::Swapped
+                                     : SwapResult::Failed;
   // Need explicit call here so on Publish we don't have pending transactions.
   abort_all();
   if (swapped == SwapResult::Truncated) {
