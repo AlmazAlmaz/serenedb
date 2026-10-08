@@ -18,7 +18,7 @@ statement error
 CREATE INDEX cif_idx ON cif_t USING inverted(id) INCLUDE(value)
   WITH (refresh_interval = 0, compaction_interval = 0);
 ----
-db error: ERROR: failed to commit index 'cif_idx'
+db error: ERROR: failed to flush index 'cif_idx': intentional debug error
 
 
 statement ok
