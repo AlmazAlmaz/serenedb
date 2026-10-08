@@ -97,8 +97,8 @@ differ within their upper bits, because the ordered encoding starts with the
 sign and the exponent, so a shallower index often selects the same candidates.
 On one million uniform DOUBLE points in three dimensions, `max_level=32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
-range 1000 wide, with an index of 122 MB instead of 427 MB built in 0.65 s
-instead of 1.78 s. Integers are different: identifiers or counts far below
+range 1000 wide, with an index of 122 MB instead of 427 MB built in 0.66 s
+instead of 1.82 s. Integers are different: identifiers or counts far below
 `2^32` share their upper 32 bits, so at `max_level=32` every row falls into the
 same cell and the index stops pruning. A box on one million BIGINT pairs read
 1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
@@ -109,9 +109,9 @@ boxes.
 Building an index buffers up to `segment_memory_max` per build worker (see
 [write memory](maintenance.md#write-memory)), and a curve index writes more
 terms per row than per-column fields. On ten million three-dimensional points
-the default build peaked near 11 GB of RAM; `WITH (segment_memory_max =
+the default build peaked at about 10.5 GB of RAM; `WITH (segment_memory_max =
 16777216)` kept it below 2 GB at the cost of a longer compaction to one segment,
-617 s instead of 92 s.
+640 s instead of 96 s.
 
 ## Choosing a curve
 
@@ -123,10 +123,10 @@ not automatically imply fewer postings for this term representation.
 
 A curve index pays off for boxes that are selective in several dimensions at
 once, where each column's range alone matches many rows: on one million
-independent three-dimensional points such boxes run 12 to 22 times faster than
+independent three-dimensional points such boxes run 12 to 26 times faster than
 intersecting per-column ranges. A full scan of one million rows takes about
 2 ms, so at that size the index beats a scan by at most about two times; on ten
-million rows selective boxes run up to seven times faster than a scan.
+million rows selective boxes run up to six times faster than a scan.
 Correlated data narrows the gap: small boxes on correlated data are a tie, wide
 correlated boxes lose to a scan, and a box with an open side is evaluated by
 the scalar predicate. At the default depth the index costs five to six times
