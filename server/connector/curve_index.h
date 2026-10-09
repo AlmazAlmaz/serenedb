@@ -29,6 +29,8 @@
 namespace sdb::connector {
 
 void ValidateCurveType(std::string_view label, const duckdb::LogicalType& type);
+bool CurveBoundFits(const duckdb::LogicalType& coordinate,
+                    const duckdb::LogicalType& bound) noexcept;
 void ValidateCurveBounds(const duckdb::LogicalType& point,
                          const duckdb::LogicalType& lower,
                          const duckdb::LogicalType& upper);

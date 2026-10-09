@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <absl/functional/function_ref.h>
+
 #include "connector/search_filter_builder.hpp"
 
 namespace sdb::connector {
@@ -30,4 +32,22 @@ bool AddCurveCandidates(irs::BooleanFilter& root,
                         const ExpressionGetter& expressions,
                         duckdb::ClientContext& context);
 
-}
+struct CurveRange {
+  duckdb::unique_ptr<duckdb::Expression> component;
+  const duckdb::Expression* lower;
+  const duckdb::Expression* upper;
+};
+
+std::vector<CurveRange> CollectCurveRanges(
+  std::span<const duckdb::unique_ptr<duckdb::Expression>> conjuncts,
+  absl::FunctionRef<
+    duckdb::unique_ptr<duckdb::Expression>(const duckdb::Expression&)>
+    normalize);
+
+bool AddCurveRangeCandidates(irs::BooleanFilter& root,
+                             std::span<const CurveRange> ranges,
+                             const duckdb::Expression& tuple,
+                             const SearchColumnInfo& info,
+                             duckdb::ClientContext& context);
+
+}  // namespace sdb::connector
