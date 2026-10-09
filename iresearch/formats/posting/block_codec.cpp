@@ -18,32 +18,23 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-#pragma once
+#include "iresearch/formats/posting/block_codec.hpp"
 
-#include <cstdint>
+namespace irs::block_codec {
 
-#include "iresearch/formats/posting/common.hpp"
-#include "iresearch/formats/posting_meta.hpp"
-#include "iresearch/search/detail/skip_walk.hpp"
-#include "iresearch/utils/type_limits.hpp"
-
-namespace irs::detail {
-
-template<typename InputType>
-bool StepToLive(SkipWalk<InputType>& walk, InputType& in, doc_id_t live,
-                uint32_t& left, doc_id_t& last) {
-  if (live - last <= doc_limits::kBlockSize || !walk.Armed()) {
-    return true;
+const DeltaDecoders kDeltaDecoders = [] {
+#ifdef __AVX2__
+  __builtin_cpu_init();
+  if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vl") &&
+      __builtin_cpu_supports("avx512bw") &&
+      __builtin_cpu_supports("avx512dq")) {
+    if (__builtin_cpu_supports("avx512vbmi2")) {
+      return kDeltaDecodersOf<true, true>;
+    }
+    return kDeltaDecodersOf<true>;
   }
-  const auto remaining = walk.Seek(live, in);
-  if (remaining == 0) {
-    left = 0;
-    return false;
-  }
-  left = remaining;
-  in.Seek(walk.Landing().doc_ptr);
-  last = walk.Landing().doc;
-  return true;
-}
+#endif
+  return kDeltaDecodersOf<false>;
+}();
 
-}  // namespace irs::detail
+}  // namespace irs::block_codec
