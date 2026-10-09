@@ -14,7 +14,8 @@ coverings and an exact scalar check of the candidates.
 A curve index is an expression index over `ROW(...)`, with two to eight
 coordinates. The expression can combine several columns with different types.
 Query the index by name and use the same tuple expression in
-`sdb_box_contains(point, lower, upper)`:
+`sdb_box_contains(point, lower, upper)`, or a conjunction of ranges on all
+components of that tuple:
 
 <SqlLogicTest id="sql/indexes/inverted/curve-search/points" />
 
@@ -46,6 +47,18 @@ retain scalar evaluation; an approximation is never negated and treated as exact
 A box with an open side, a NULL component in either bound, is evaluated by the
 scalar predicate too: every curve cell constrains all dimensions at once, so the
 index cannot prune by the dimensions that are left unconstrained.
+
+Ordinary ranges use the same covering when every component has both a lower
+and an upper constant bound. Supported predicates are `BETWEEN`, `>=`, `<=`,
+`>`, `<` and `=`; equality supplies both endpoints, and several ranges on one
+component are intersected. The covering selects candidates; the original
+predicates still provide the exact check, including strict endpoints.
+
+Components match the column or identical expression in the indexed `ROW(...)`.
+Order-preserving widening casts within the signed or unsigned integer family,
+and FLOAT to DOUBLE, can also match the original component. Bounds follow the
+coordinate families above; NULL and nonconstant bounds do not supply endpoints.
+Partial tuples, OR expressions and NOT expressions retain scalar evaluation.
 
 ## Options and bounds
 
