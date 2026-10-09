@@ -24,6 +24,13 @@ WHERE sdb_box_contains(ROW(x,y), ROW(0,0::DOUBLE), ROW(10,20::DOUBLE));
 id
 1
 
+query
+SELECT id FROM measurements_xy
+WHERE x BETWEEN 0 AND 10 AND y BETWEEN 0 AND 20;
+----
+id
+1
+
 # DOCS_TEST_END
 
 statement ok

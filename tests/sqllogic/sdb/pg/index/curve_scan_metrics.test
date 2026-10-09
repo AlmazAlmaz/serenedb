@@ -40,3 +40,145 @@ candidates
 
 statement ok
 DROP TABLE curve_metrics;
+
+statement ok
+CREATE TABLE curve_range_metrics(id INTEGER PRIMARY KEY, x BIGINT, y BIGINT);
+
+statement ok
+INSERT INTO curve_range_metrics SELECT i, i % 64, i // 64 FROM range(4096) t(i);
+
+statement ok
+CREATE INDEX curve_range_metrics_idx ON curve_range_metrics USING inverted(
+ id, (ROW(x,y)) curve(max_cells=16)) INCLUDE (x,y);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_range_metrics;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_plain.json';
+
+query
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE x BETWEEN 20 AND 25 AND y BETWEEN 20 AND 25;
+----
+total
+52650
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_box.json';
+
+query
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE sdb_box_contains(ROW(x,y), ROW(20,20), ROW(25,25));
+----
+total
+52650
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_strict.json';
+
+query
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE x > 20 AND x < 25 AND y > 20 AND y < 25;
+----
+total
+23400
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_equal.json';
+
+query
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE x = 22 AND y = 22;
+----
+total
+1430
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_intersect.json';
+
+query
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE x BETWEEN 10 AND 30 AND x >= 20 AND x <= 25
+ AND y BETWEEN 10 AND 30 AND y >= 20 AND y <= 25;
+----
+total
+52650
+
+statement ok
+RESET enable_profiling;
+
+query
+WITH plain AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_plain.json') f, json_tree(f.content) j WHERE j.key='rows_scanned'),
+box AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_box.json') f, json_tree(f.content) j WHERE j.key='rows_scanned')
+SELECT plain.candidates = box.candidates AS equal, box.candidates < 4096 AS pruned FROM plain, box;
+----
+equal	pruned
+t	t
+
+query
+WITH strict AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_strict.json') f, json_tree(f.content) j WHERE j.key='rows_scanned'),
+equal AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_equal.json') f, json_tree(f.content) j WHERE j.key='rows_scanned'),
+intersection AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_intersect.json') f, json_tree(f.content) j WHERE j.key='rows_scanned'),
+box AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_box.json') f, json_tree(f.content) j WHERE j.key='rows_scanned')
+SELECT strict.candidates < 4096 AS strict_pruned, equal.candidates < 4096 AS equal_pruned,
+ intersection.candidates = box.candidates AS intersect_equal FROM strict, equal, intersection, box;
+----
+strict_pruned	equal_pruned	intersect_equal
+t	t	t
+
+statement ok
+CREATE INDEX curve_range_metrics_expr ON curve_range_metrics USING inverted(
+ id, (ROW(abs(x - 32), abs(y - 32))) curve(max_cells=16)) INCLUDE (x,y);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_range_metrics;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_expr.json';
+
+query
+SELECT count(id) AS n FROM curve_range_metrics_expr WHERE abs(x - 32) BETWEEN 2 AND 4 AND abs(y - 32) BETWEEN 2 AND 4;
+----
+n
+36
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_range_expr_box.json';
+
+query
+SELECT count(id) AS n FROM curve_range_metrics_expr WHERE sdb_box_contains(ROW(abs(x - 32), abs(y - 32)),ROW(2,2),ROW(4,4));
+----
+n
+36
+
+statement ok
+RESET enable_profiling;
+
+query
+WITH plain AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_expr.json') f, json_tree(f.content) j WHERE j.key='rows_scanned'),
+box AS (
+ SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+ FROM read_text('${__TEST_DIR__}/curve_range_expr_box.json') f, json_tree(f.content) j WHERE j.key='rows_scanned')
+SELECT plain.candidates = box.candidates AS equal, box.candidates < 4096 AS pruned FROM plain, box;
+----
+equal	pruned
+t	t
+
+statement ok
+DROP TABLE curve_range_metrics;

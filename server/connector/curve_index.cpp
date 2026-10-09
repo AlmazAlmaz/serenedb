@@ -136,6 +136,12 @@ void ValidateCurveType(std::string_view label,
   }
 }
 
+bool CurveBoundFits(const duckdb::LogicalType& coordinate,
+                    const duckdb::LogicalType& bound) noexcept {
+  return BoundFits(CoordinateFamily(bound.id()),
+                   CoordinateFamily(coordinate.id()));
+}
+
 void ValidateCurveBounds(const duckdb::LogicalType& point,
                          const duckdb::LogicalType& lower,
                          const duckdb::LogicalType& upper) {
@@ -158,8 +164,7 @@ void ValidateCurveBounds(const duckdb::LogicalType& point,
     for (size_t axis = 0; axis < coordinates.size(); ++axis) {
       const auto& coordinate = coordinates[axis].second;
       const auto& limit = limits[axis].second;
-      if (!BoundFits(CoordinateFamily(limit.id()),
-                     CoordinateFamily(coordinate.id()))) {
+      if (!CurveBoundFits(coordinate, limit)) {
         THROW_SQL_ERROR(
           ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
           ERR_MSG("sdb_box_contains: bound ", limit.ToString(),
