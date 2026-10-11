@@ -122,7 +122,8 @@ void ClusterCatalog::SyncCatalogLogLoop() {
     SDB_WAIT_ON_FAILURE("pause_catalog_log_sync");
     try {
       log->SyncUpTo(offset);
-    } catch (...) {
+    } catch (const std::exception& e) {
+      SDB_ERROR(GENERAL, "catalog log sync failed: ", e.what());
     }
   }
 }
@@ -301,8 +302,8 @@ void ClusterCatalog::Bootstrap(duckdb::ClientContext& context) {
                   "POSTGRES_PASSWORD");
       }
       info.password = std::move(*verifier);
-      SDB_INFO(GENERAL, "bootstrap: initial password set for role '", kRootRole,
-               "' from POSTGRES_PASSWORD");
+      SDB_DEBUG(GENERAL, "bootstrap: initial password set for role '",
+                kRootRole, "' from POSTGRES_PASSWORD");
     }
     CreateRole(transaction, info);
   }

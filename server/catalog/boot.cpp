@@ -87,10 +87,20 @@ std::vector<std::pair<duckdb::idx_t, std::filesystem::path>> OidDirectories(
   const std::filesystem::path& directory) {
   std::vector<std::pair<duckdb::idx_t, std::filesystem::path>> found;
   std::error_code ec;
-  for (const auto& entry : std::filesystem::directory_iterator{directory, ec}) {
+  std::filesystem::directory_iterator entries{directory, ec};
+  if (ec && ec != std::errc::no_such_file_or_directory) {
+    SDB_FATAL(STARTUP, "cannot list directory '", directory.string(),
+              "': ", ec.message());
+  }
+  for (const auto& entry : entries) {
+    const bool is_directory = entry.is_directory(ec);
+    if (ec) {
+      SDB_FATAL(STARTUP, "cannot stat '", entry.path().string(),
+                "': ", ec.message());
+    }
     const auto name = entry.path().filename().string();
     duckdb::idx_t oid = 0;
-    if (entry.is_directory(ec) && absl::c_all_of(name, absl::ascii_isdigit) &&
+    if (is_directory && absl::c_all_of(name, absl::ascii_isdigit) &&
         absl::SimpleAtoi(name, &oid)) {
       found.emplace_back(oid, entry.path());
     }
@@ -270,6 +280,9 @@ duckdb::Catalog& AttachDatabaseCatalog(duckdb::ClientContext& context,
   auto visibility = duckdb::AttachVisibility::SHOWN;
   std::error_code ec;
   if (!gMissingDatabases.fresh_cluster && !std::filesystem::exists(file, ec)) {
+    if (ec) {
+      SDB_FATAL(STARTUP, "cannot stat '", file, "': ", ec.message());
+    }
     gMissingDatabases.missing.insert(oid);
     info.path = IN_MEMORY_PATH;
     visibility = duckdb::AttachVisibility::HIDDEN;
@@ -309,10 +322,18 @@ void InitCatalog(std::string_view directory) {
   const auto log_path = layout.CatalogLogFile();
   std::error_code log_ec;
   gMissingDatabases.fresh_cluster = !std::filesystem::exists(log_path, log_ec);
+  if (log_ec) {
+    SDB_FATAL(STARTUP, "cannot stat '", log_path, "': ", log_ec.message());
+  }
   if (gMissingDatabases.fresh_cluster &&
       absl::c_any_of(OidDirectories(layout.EngineDir()), [](const auto& dir) {
         std::error_code ec;
-        return !std::filesystem::is_empty(dir.second, ec);
+        const bool empty = std::filesystem::is_empty(dir.second, ec);
+        if (ec) {
+          SDB_FATAL(STARTUP, "cannot list directory '", dir.second.string(),
+                    "': ", ec.message());
+        }
+        return !empty;
       })) {
     SDB_FATAL(STARTUP, "'", log_path, "' does not exist, but '",
               layout.EngineDir().string(),

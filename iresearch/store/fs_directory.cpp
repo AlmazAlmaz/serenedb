@@ -89,13 +89,11 @@ class FsLock : public IndexLock {
     bool exists;
 
     if (!file_utils::Exists(exists, _dir.c_str())) {
-      SDB_ERROR(IRESEARCH, "Error caught");
       return false;
     }
 
     // create directory if it is not exists
     if (!exists && !file_utils::Mkdir(_dir.c_str(), true)) {
-      SDB_ERROR(IRESEARCH, "Error caught");
       return false;
     }
 
@@ -105,7 +103,6 @@ class FsLock : public IndexLock {
     if (!file_utils::VerifyLockFile(path.c_str())) {
       if (!file_utils::Exists(exists, path.c_str()) ||
           (exists && !file_utils::Remove(path.c_str()))) {
-        SDB_ERROR(IRESEARCH, "Error caught");
         return false;
       }
 

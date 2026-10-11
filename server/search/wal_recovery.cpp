@@ -166,8 +166,8 @@ void InitInvertedIndexes() {
   }
   const auto duration =
     absl::FromChrono(std::chrono::steady_clock::now() - begin);
-  SDB_INFO(SEARCH, "search index recovery: ", recovering.size(),
-           " inverted index(es) in ", absl::FormatDuration(duration));
+  SDB_DEBUG(SEARCH, "search index recovery: ", recovering.size(),
+            " inverted index(es) in ", absl::FormatDuration(duration));
 }
 
 void StartInvertedIndexTasks() {

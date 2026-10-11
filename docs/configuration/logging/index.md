@@ -45,6 +45,10 @@ The log level can be set using:
 
 <SqlLogicTest id="configuration/logging/index/example_004" />
 
+At the default `INFO` level the log holds only what needs attention: warnings and errors from background work, such as index refresh and compaction, checkpoints, recovery and cleanup, and failures that no statement reports. Routine events are logged at `DEBUG`, among them listeners starting, recovery progress, extension loads and credential refreshes.
+
+A warning about a client's own statement, such as a deprecated setting or a file a reader skipped, is sent to that client as a PostgreSQL `WARNING` notice instead of being written to the log.
+
 ## Log Types
 
 In SereneDB, log messages can have an associated log type. Log types allow two main things:

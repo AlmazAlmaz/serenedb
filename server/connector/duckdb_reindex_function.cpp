@@ -311,9 +311,12 @@ bool CollectDeadRowPks(duckdb::ClientContext& context,
     // The caller demotes to a full rescan either way; without this the reason
     // is invisible, and a road that cannot be planned looks like one that
     // simply had nothing to remove.
-    SDB_WARN(SEARCH, "reindex \"", target.name,
-             "\": removing dead rows by key failed, falling back to a rescan: ",
-             error);
+    conn_ctx.AddNotice(SQL_ERROR_DATA(
+      ERR_CODE(ERRCODE_WARNING),
+      ERR_MSG(
+        "reindex \"", target.name,
+        "\": removing dead rows by key failed, falling back to a rescan: ",
+        error)));
     return false;
   };
   if (result->HasError()) {
@@ -1282,7 +1285,7 @@ absl::StatusOr<bool> RunReindexTick(duckdb::DatabaseInstance& db,
                            database_id,
                            /*backend_pid=*/0,
                            [&](auto& notice) {
-                             SDB_INFO(SEARCH, "reindex \"", index_name,
+                             SDB_WARN(SEARCH, "reindex \"", index_name,
                                       "\": ", notice.errmsg);
                            }};
     session.Begin();

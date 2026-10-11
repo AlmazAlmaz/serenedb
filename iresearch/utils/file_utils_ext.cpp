@@ -514,16 +514,16 @@ bool verify_lock_file(const path_char_t* file) {
   // check hostname
   const size_t len = strlen(buf);
   if (!is_same_hostname(buf, len)) {
-    SDB_INFO(IRESEARCH, "Index locked by another host, hostname: '",
-             std::string_view{buf, len}, "', file: '", ToStr(file), "'");
+    SDB_DEBUG(IRESEARCH, "Index locked by another host, hostname: '",
+              std::string_view{buf, len}, "', file: '", ToStr(file), "'");
     return true;  // locked
   }
 
   // check pid
   const char* pid = buf + len + 1;
   if (is_valid_pid(pid)) {
-    SDB_INFO(IRESEARCH, "Index locked by another process, PID: '", pid,
-             "', file: '", ToStr(file), "'");
+    SDB_DEBUG(IRESEARCH, "Index locked by another process, PID: '", pid,
+              "', file: '", ToStr(file), "'");
     return true;  // locked
   }
 
@@ -661,8 +661,8 @@ bool VerifyLockFile(const path_char_t* file) {
   // check hostname
   const size_t len = strlen(buf);  // hostname length
   if (!IsSameHostname(buf, len)) {
-    SDB_INFO(IRESEARCH, "Index locked by another host, hostname: '",
-             std::string_view{buf, len}, "', file: '", file, "'");
+    SDB_DEBUG(IRESEARCH, "Index locked by another host, hostname: '",
+              std::string_view{buf, len}, "', file: '", file, "'");
     return true;  // locked
   }
 
@@ -674,8 +674,8 @@ bool VerifyLockFile(const path_char_t* file) {
   // check pid
   const char* pid = buf + len + 1;
   if (IsValidPid(pid)) {
-    SDB_INFO(IRESEARCH, "Index locked by another process, PID: '", pid,
-             "', file: '", file, "'");
+    SDB_DEBUG(IRESEARCH, "Index locked by another process, PID: '", pid,
+              "', file: '", file, "'");
     return true;  // locked
   }
 

@@ -33,6 +33,7 @@
 #include <duckdb/parser/statement/transaction_statement.hpp>
 #include <iresearch/utils/assert.hpp>
 #include <iresearch/utils/debugging.hpp>
+#include <iresearch/utils/log.hpp>
 #include <iresearch/utils/system_compiler.hpp>
 
 #include "auth/role_closure.h"
@@ -2593,9 +2594,10 @@ yaclib::Task<> PgWireSession<Kind>::Run() {
     auto cpu = SpawnSession();
     try {
       co_await PumpRecv();
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
       // Teardown boundary, not error handling: every socket op is NoThrow, so a
       // throw here is a genuine escape -- fall through to stop + join.
+      SDB_ERROR(GENERAL, "pg session terminated by exception: ", e.what());
     }
     this->Stop();
     co_await std::move(cpu);

@@ -160,7 +160,7 @@ int RunServer(int argc, char** argv) {
     // running.
     network.StartListeners();
 
-    SDB_INFO(GENERAL, "SereneDB is ready for business. Have fun!");
+    SDB_DEBUG(GENERAL, "SereneDB is ready for business. Have fun!");
 
     irs::CrashHandler::SetState("running");
     server.wait();
@@ -226,10 +226,10 @@ int main(int argc, char* argv[]) {
   server::query::RegisterServerExtensions(engine.instance());
 
   sdb::app::InitProcess(argv[0]);
-  SDB_INFO(STARTUP, "executable memory: ", remap.remapped >> 20,
-           " MB of machine code remapped into anonymous huge-page memory, ",
-           remap.populated >> 20, " MB of read-only mappings pre-read",
-           remap.skipped.empty() ? "" : "; remap skipped: ", remap.skipped);
+  SDB_DEBUG(STARTUP, "executable memory: ", remap.remapped >> 20,
+            " MB of machine code remapped into anonymous huge-page memory, ",
+            remap.populated >> 20, " MB of read-only mappings pre-read",
+            remap.skipped.empty() ? "" : "; remap skipped: ", remap.skipped);
   int rc = RunServer(argc, argv);
   sdb::app::ShutdownGlobals();
 
