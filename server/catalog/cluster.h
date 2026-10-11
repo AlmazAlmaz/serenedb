@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <absl/functional/function_ref.h>
 #include <absl/synchronization/mutex.h>
 
 #include <atomic>
@@ -62,7 +63,6 @@ class ClusterCatalog final : public duckdb::DuckCatalog {
                                     duckdb::idx_t catalog_oid) final;
   void OnCatalogLogPrepared() final;
   void OnCatalogLogDecided() final;
-  void BeginCatalogLogCommit() final;
   void EndCatalogLogCommit() final;
   void RequestCatalogLogSync(duckdb::shared_ptr<duckdb::WriteAheadLog> log,
                              duckdb::idx_t offset) final;
@@ -149,7 +149,6 @@ class ClusterCatalog final : public duckdb::DuckCatalog {
   std::thread _sync_thread;
   std::mutex _log_mutex;
   duckdb::shared_ptr<duckdb::WriteAheadLog> _catalog_log;
-  std::atomic_size_t _commits_in_flight{0};
   std::atomic_uint64_t _catalog_generation{1};
   std::atomic<duckdb::idx_t> _generation_version{0};
   std::mutex _roles_mutex;
@@ -166,11 +165,25 @@ ClusterCatalog& ClusterOf(duckdb::ClientContext& context);
 ClusterCatalog& ClusterOf(duckdb::DatabaseInstance& db);
 ClusterCatalog& ClusterOf();
 
-inline duckdb::optional_ptr<duckdb::CatalogEntry> FindDatabase(
-  std::string_view name) {
+inline bool ReadDatabase(
+  std::string_view name,
+  absl::FunctionRef<void(const DatabaseCatalogEntry&)> read) {
   auto& cluster = ClusterOf();
   return cluster.GetCatalogSet(duckdb::CatalogType::DATABASE_ENTRY)
-    .GetEntry(cluster.LoginTransaction(), duckdb::Identifier{name});
+    .ReadEntry(cluster.LoginTransaction(), duckdb::Identifier{name},
+               [&](duckdb::CatalogEntry& entry) {
+                 read(entry.Cast<DatabaseCatalogEntry>());
+               });
+}
+
+inline bool ReadRole(std::string_view name,
+                     absl::FunctionRef<void(const RoleCatalogEntry&)> read) {
+  auto& cluster = ClusterOf();
+  return cluster.GetCatalogSet(duckdb::CatalogType::ROLE_ENTRY)
+    .ReadEntry(cluster.LoginTransaction(), duckdb::Identifier{name},
+               [&](duckdb::CatalogEntry& entry) {
+                 read(entry.Cast<RoleCatalogEntry>());
+               });
 }
 
 }  // namespace sdb::catalog
