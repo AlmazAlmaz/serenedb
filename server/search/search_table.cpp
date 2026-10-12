@@ -348,8 +348,9 @@ auto SearchTable::CompactUnsafeAsync(
     const auto res =
       co_await _writer->CompactAsync(policy, field_options, progress, env);
     if (!res) {
-      result = absl::InternalError(
-        absl::StrCat("compaction failed for search table ", GetTableId()));
+      SDB_DEBUG(SEARCH, "compaction of search table ", GetTableId(),
+                " merged nothing: cancelled, or every document was removed");
+      empty_compaction = true;
     } else {
       empty_compaction = (res.size == 0);  // nothing merged -> idle round
     }

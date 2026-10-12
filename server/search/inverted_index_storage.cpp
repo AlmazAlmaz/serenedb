@@ -423,9 +423,10 @@ auto InvertedIndexStorage::CompactUnsafeImpl(
     const auto res =
       co_await _writer->CompactAsync(policy, field_options, progress, env);
     if (res.error == irs::CompactionError::Fail) {
-      co_return absl::InternalError(absl::StrCat(
-        "failure while executing compaction policy on Search index '", GetId(),
-        "'"));
+      SDB_DEBUG(SEARCH, "compaction of Search index '", GetId(),
+                "' merged nothing: cancelled, or every document was removed");
+      empty_compaction = true;
+      co_return absl::OkStatus();
     }
     if (res.error == irs::CompactionError::Busy) {
       co_return absl::OkStatus();
