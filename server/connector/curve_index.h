@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <absl/numeric/int128.h>
+
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/types/value.hpp>
 #include <duckdb/function/function.hpp>
@@ -61,6 +63,9 @@ struct CurveAxis {
   uint64_t key_hi = 0;
   double lo = 0;
   double hi = 0;
+  bool ipv6_range = false;
+  absl::uint128 ipv6_lo = 0;
+  absl::uint128 ipv6_hi = 0;
 
   bool operator==(const CurveAxis&) const = default;
 };
