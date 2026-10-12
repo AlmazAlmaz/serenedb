@@ -26,11 +26,10 @@
 
 namespace sdb::connector {
 
-bool AddCurveCandidates(irs::BooleanFilter& root,
-                        const duckdb::Expression& expression,
-                        const ColumnGetter& columns,
-                        const ExpressionGetter& expressions,
-                        duckdb::ClientContext& context);
+bool ClaimCurveMatch(
+  irs::BooleanFilter& root,
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& filters, size_t index,
+  const ExpressionGetter& expressions, duckdb::ClientContext& context);
 
 struct CurveRange {
   duckdb::unique_ptr<duckdb::Expression> component;
@@ -48,7 +47,7 @@ std::vector<CurveRange> CollectCurveRanges(
 
 bool AddCurveRangeCandidates(irs::BooleanFilter& root,
                              std::span<const CurveRange> ranges,
-                             const duckdb::Expression& tuple,
+                             const duckdb::Expression& key,
                              const SearchColumnInfo& info,
                              duckdb::ClientContext& context);
 

@@ -14,7 +14,7 @@ INSERT INTO curve_strict_signed VALUES
 
 statement ok
 CREATE INDEX curve_strict_signed_idx ON curve_strict_signed USING inverted(
- id, (ROW(a,y)) curve(), (ROW(b,y)) curve(), (ROW(c,y)) curve(), (ROW(d,y)) curve()) INCLUDE (a,b,c,d,y);
+ id, (curve(a, y)), (curve(b, y)), (curve(c, y)), (curve(d, y))) INCLUDE (a,b,c,d,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_strict_signed;
@@ -70,7 +70,7 @@ INSERT INTO curve_strict_unsigned VALUES
 
 statement ok
 CREATE INDEX curve_strict_unsigned_idx ON curve_strict_unsigned USING inverted(
- id, (ROW(a,y)) curve(), (ROW(b,y)) curve(), (ROW(c,y)) curve(), (ROW(d,y)) curve()) INCLUDE (a,b,c,d,y);
+ id, (curve(a, y)), (curve(b, y)), (curve(c, y)), (curve(d, y))) INCLUDE (a,b,c,d,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_strict_unsigned;
@@ -120,7 +120,7 @@ INSERT INTO curve_strict_time VALUES
 
 statement ok
 CREATE INDEX curve_strict_time_idx ON curve_strict_time USING inverted(
- id, (ROW(d,y)) curve(), (ROW(t,y)) curve(), (ROW(z,y)) curve()) INCLUDE (d,t,z,y);
+ id, (curve(d, y)), (curve(t, y)), (curve(z, y))) INCLUDE (d,t,z,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_strict_time;
@@ -201,11 +201,11 @@ INSERT INTO curve_strict_float VALUES
 
 statement ok
 CREATE INDEX curve_strict_float_idx ON curve_strict_float USING inverted(
- id, (ROW(f,y)) curve(), (ROW(d,y)) curve()) INCLUDE (f,d,y);
+ id, (curve(f, y)), (curve(d, y))) INCLUDE (f,d,y);
 
 statement ok
 CREATE INDEX curve_strict_float_h ON curve_strict_float USING inverted(
- id, (ROW(f,y)) curve(curve='hilbert'), (ROW(d,y)) curve(curve='hilbert')) INCLUDE (f,d,y);
+ id, (curve(f, y, kind := 'hilbert')), (curve(d, y, kind := 'hilbert'))) INCLUDE (f,d,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_strict_float;
@@ -313,7 +313,7 @@ INSERT INTO curve_strict_metrics SELECT i, i % 4, i // 4 FROM range(16) t(i);
 
 statement ok
 CREATE INDEX curve_strict_metrics_idx ON curve_strict_metrics USING inverted(
- id, (ROW(x,y)) curve()) INCLUDE (x,y);
+ id, (curve(x, y))) INCLUDE (x,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_strict_metrics;
@@ -335,7 +335,7 @@ SET profiling_output = '${__TEST_DIR__}/curve_strict_box.json';
 
 query
 SELECT sum(id) AS total FROM curve_strict_metrics_idx
- WHERE sdb_box_contains(ROW(x,y),ROW(0,0),ROW(2,2)) AND x > 0 AND x < 2 AND y > 0 AND y < 2;
+ WHERE curve(x, y) @@ ts_between(ROW(0,0), ROW(2,2), false, false);
 ----
 total
 5
@@ -344,7 +344,7 @@ statement ok
 SET profiling_output = '${__TEST_DIR__}/curve_strict_closed.json';
 
 query
-SELECT sum(id) AS total FROM curve_strict_metrics_idx WHERE sdb_box_contains(ROW(x,y),ROW(0,0),ROW(2,2));
+SELECT sum(id) AS total FROM curve_strict_metrics_idx WHERE curve(x, y) @@ ts_between(ROW(0,0), ROW(2,2), true, true);
 ----
 total
 45
@@ -370,3 +370,73 @@ strict_candidates	explicit_equal	stricter
 
 statement ok
 DROP TABLE curve_strict_metrics;
+
+statement ok
+CREATE TABLE curve_strict_lossy(id INTEGER PRIMARY KEY, x BIGINT, d DOUBLE, ip INET, y BIGINT);
+
+statement ok
+INSERT INTO curve_strict_lossy VALUES
+ (1, -2, -0.5, '10.0.0.1/24', 0),
+ (2, -1, 0.0, '10.0.0.1/32', 0),
+ (3, 0, 0.5, '10.0.0.2', 0),
+ (4, 9, 1.0, '::1', 0),
+ (5, 10, 1.5, '::2', 0),
+ (6, 11, 2.0, '::3', 0),
+ (7, 12, 'NaN', '2001:db8::1', 0);
+
+statement ok
+CREATE INDEX curve_strict_lossy_idx ON curve_strict_lossy USING inverted(id,
+ (curve(x, y, lower := ROW(0, 0), upper := ROW(10, 1))),
+ (curve(d, y, lower := ROW(0, 0), upper := ROW(1, 1))),
+ (curve(ip, y))) INCLUDE (x, d, ip, y);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_strict_lossy;
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(x, y, lower := ROW(0, 0), upper := ROW(10, 1))
+   @@ ts_between(ROW(10, NULL), ROW(NULL, NULL), false, true)) AS above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(x, y, lower := ROW(0, 0), upper := ROW(10, 1))
+   @@ ts_between(ROW(NULL, NULL), ROW(0, NULL), true, false)) AS below,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(d, y, lower := ROW(0, 0), upper := ROW(1, 1))
+   @@ ts_between(ROW(1, NULL), ROW(NULL, NULL), false, true)) AS double_above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(d, y, lower := ROW(0, 0), upper := ROW(1, 1))
+   @@ ts_between(ROW(NULL, NULL), ROW(0, NULL), true, false)) AS double_below;
+----
+above	below	double_above	double_below
+{6,7}	{1,2}	{5,6,7}	{1}
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE x > 10) AS above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE x < 0) AS below,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE d > 1) AS double_above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE d < 0) AS double_below;
+----
+above	below	double_above	double_below
+{6,7}	{1,2}	{5,6,7}	{1}
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(ip, y)
+   @@ ts_between(ROW('10.0.0.1/24'::INET, NULL), ROW(NULL, NULL), false, true)) AS mask,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(ip, y)
+   @@ ts_between(ROW('::1'::INET, NULL), ROW(NULL, NULL), false, true)) AS ipv6_above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy_idx WHERE curve(ip, y)
+   @@ ts_between(ROW(NULL, NULL), ROW('::3'::INET, NULL), true, false)) AS ipv6_below;
+----
+mask	ipv6_above	ipv6_below
+{2,3,4,5,6,7}	{5,6,7}	{1,2,3,4,5}
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE ip > '10.0.0.1/24'::INET) AS mask,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE ip > '::1'::INET) AS ipv6_above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_lossy WHERE ip < '::3'::INET) AS ipv6_below;
+----
+mask	ipv6_above	ipv6_below
+{2,3,4,5,6,7}	{5,6,7}	{1,2,3,4,5}
+
+statement ok
+DROP TABLE curve_strict_lossy;

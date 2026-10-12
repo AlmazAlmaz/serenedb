@@ -15,13 +15,13 @@ INSERT INTO curve_fuzz_points SELECT i,
 FROM range(10000) t(i);
 
 statement ok
-CREATE INDEX curve_fuzz_points_default ON curve_fuzz_points USING inverted(id, (ROW(x, y, z)) curve()) INCLUDE (x, y, z);
+CREATE INDEX curve_fuzz_points_default ON curve_fuzz_points USING inverted(id, (curve(x, y, z))) INCLUDE (x, y, z);
 
 statement ok
-CREATE INDEX curve_fuzz_points_fine ON curve_fuzz_points USING inverted(id, (ROW(x, y, z)) curve(level_step=1, max_cells=8)) INCLUDE (x, y, z);
+CREATE INDEX curve_fuzz_points_fine ON curve_fuzz_points USING inverted(id, (curve(x, y, z, level_step := 1, max_cells := 8))) INCLUDE (x, y, z);
 
 statement ok
-CREATE INDEX curve_fuzz_points_coarse ON curve_fuzz_points USING inverted(id, (ROW(x, y, z)) curve(curve='hilbert', level_step=5, max_level=48, max_cells=512)) INCLUDE (x, y, z);
+CREATE INDEX curve_fuzz_points_coarse ON curve_fuzz_points USING inverted(id, (curve(x, y, z, kind := 'hilbert', level_step := 5, max_level := 48, max_cells := 512))) INCLUDE (x, y, z);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_fuzz_points;
@@ -48,17 +48,25 @@ statement ok
 SET VARIABLE curve_fuzz_highs = (SELECT list(curve_fuzz_hi(k) ORDER BY k) FROM range(1, 129) r(k));
 
 statement ok
-CREATE MACRO curve_fuzz_box(p, k) AS sdb_box_contains(p, getvariable('curve_fuzz_lows')[k], getvariable('curve_fuzz_highs')[k]);
+CREATE MACRO curve_fuzz_box(k) AS ts_between(getvariable('curve_fuzz_lows')[k], getvariable('curve_fuzz_highs')[k], true, true);
+
+statement ok
+CREATE MACRO curve_fuzz_contains(px, py, pz, k) AS
+ px BETWEEN getvariable('curve_fuzz_lows')[k][1] AND getvariable('curve_fuzz_highs')[k][1]
+ AND py BETWEEN getvariable('curve_fuzz_lows')[k][2] AND getvariable('curve_fuzz_highs')[k][2]
+ AND pz BETWEEN getvariable('curve_fuzz_lows')[k][3] AND getvariable('curve_fuzz_highs')[k][3];
 
 statement ok
 CREATE MACRO curve_fuzz_index(c, k) AS TABLE
- SELECT k AS box, id FROM curve_fuzz_points_default WHERE c = 0 AND curve_fuzz_box(ROW(x, y, z), k)
- UNION ALL SELECT k, id FROM curve_fuzz_points_fine WHERE c = 1 AND curve_fuzz_box(ROW(x, y, z), k)
- UNION ALL SELECT k, id FROM curve_fuzz_points_coarse WHERE c = 2 AND curve_fuzz_box(ROW(x, y, z), k);
+ SELECT k AS box, id FROM curve_fuzz_points_default WHERE c = 0 AND curve(x, y, z) @@ curve_fuzz_box(k)
+ UNION ALL SELECT k, id FROM curve_fuzz_points_fine WHERE c = 1
+   AND curve(x, y, z, level_step := 1, max_cells := 8) @@ curve_fuzz_box(k)
+ UNION ALL SELECT k, id FROM curve_fuzz_points_coarse WHERE c = 2
+   AND curve(x, y, z, kind := 'hilbert', level_step := 5, max_level := 48, max_cells := 512) @@ curve_fuzz_box(k);
 
 statement ok
 CREATE MACRO curve_fuzz_scan(k) AS TABLE
- SELECT k AS box, id FROM curve_fuzz_points WHERE curve_fuzz_box(ROW(x, y, z), k);
+ SELECT k AS box, id FROM curve_fuzz_points WHERE curve_fuzz_contains(x, y, z, k);
 
 statement ok
 CREATE MACRO curve_fuzz_index8(c, b) AS TABLE

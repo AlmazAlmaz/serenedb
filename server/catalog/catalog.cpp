@@ -361,10 +361,9 @@ void SereneDBCatalog::BindIndexDefinition(duckdb::Binder& binder,
       info.parsed_expressions.erase(info.parsed_expressions.begin() + i);
     }
   }
-  for (size_t i = 0; i < info.column_opclasses.size(); ++i) {
-    const auto& opclass = info.column_opclasses[i];
-    if (opclass.empty() || (i < info.column_opclass_options.size() &&
-                            info.column_opclass_options[i])) {
+  for (const auto& opclass : info.column_opclasses) {
+    if (opclass.empty() || opclass == kIncludedKind || opclass == kIVFKind ||
+        opclass == kHNSWKind) {
       continue;
     }
     auto entry = duckdb::Catalog::GetEntry<TokenizerCatalogEntry>(
