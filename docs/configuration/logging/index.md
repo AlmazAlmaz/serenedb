@@ -88,6 +88,8 @@ This is a (non-exhaustive) list of the available log types in SereneDB.
 | `QueryLog`   | Logs which queries are executed in SereneDB              | No         |
 | `FileSystem` | Logs all FileSystem interaction with SereneDB's Filesystem | Yes        |
 | `HTTP`       | Logs all HTTP traffic from SereneDB's internal HTTP client | Yes        |
+| `PostgresQueryLog` | Logs every query sent to a PostgreSQL server, with `query` and `duration_ms` | Yes |
+| `ClickHouseQueryLog` | Logs every query sent to a ClickHouse server, with `query` and `duration_ms`; a failed query is logged too | Yes |
 
 ### SereneDB Server Log Types
 
