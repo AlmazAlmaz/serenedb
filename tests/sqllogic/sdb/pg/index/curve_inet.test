@@ -1,3 +1,5 @@
+control substitution on
+
 statement ok
 CREATE TABLE curve_hosts(id INTEGER PRIMARY KEY, ip INET, t TIMESTAMP);
 
@@ -85,3 +87,96 @@ ip
 
 statement ok
 DROP TABLE curve_hosts;
+
+statement ok
+CREATE TABLE curve_subnet(id INTEGER PRIMARY KEY, ip INET, t BIGINT);
+
+statement ok
+INSERT INTO curve_subnet SELECT i,
+ ('2001:db8:1::' || lower(printf('%x', (i * 7919) % 65536)) || ':' || lower(printf('%x', i % 4096)))::INET,
+ (i * 104729) % 10000 FROM range(20000) r(i);
+
+statement ok
+INSERT INTO curve_subnet SELECT 20000 + i, ('2001:db8:' || (i % 7 + 2) || '::' || lower(printf('%x', i)))::INET, i
+FROM range(200) r(i);
+
+statement ok
+INSERT INTO curve_subnet SELECT 21000 + i, ('10.0.0.' || i)::INET, i FROM range(100) r(i);
+
+statement ok
+CREATE INDEX curve_subnet_plain ON curve_subnet USING inverted(id, (curve(ip, t))) INCLUDE (ip, t);
+
+statement ok
+CREATE INDEX curve_subnet_norm ON curve_subnet USING inverted(id, (curve(ip, t,
+ lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL)))) INCLUDE (ip, t);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_subnet;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_subnet_plain.json';
+
+query
+SELECT count(id) AS n, sum(id) AS total FROM curve_subnet_plain WHERE curve(ip, t) @@ ts_between(
+ ROW('2001:db8:1::1000:0'::INET, 1000), ROW('2001:db8:1::1fff:fff'::INET, 3000), true, true);
+----
+n	total
+239	2402821
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_subnet_norm.json';
+
+query
+SELECT count(id) AS n, sum(id) AS total FROM curve_subnet_norm WHERE curve(ip, t,
+ lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL))
+ @@ ts_between(ROW('2001:db8:1::1000:0'::INET, 1000), ROW('2001:db8:1::1fff:fff'::INET, 3000), true, true);
+----
+n	total
+239	2402821
+
+statement ok
+RESET enable_profiling;
+
+query
+SELECT count(id) AS n, sum(id) AS total FROM curve_subnet
+WHERE CASE WHEN ip > '2001:db8:1::1fff:fff'::INET THEN false ELSE ip >= '2001:db8:1::1000:0'::INET END
+ AND t >= 1000 AND t <= 3000;
+----
+n	total
+239	2402821
+
+query
+WITH candidates AS (
+ SELECT f.filename AS name, max(CAST(j.atom AS BIGINT)) AS n
+ FROM read_text('${__TEST_DIR__}/curve_subnet_*.json') f, json_tree(f.content) j
+ WHERE j.key='rows_scanned' GROUP BY f.filename),
+plain AS (SELECT n FROM candidates WHERE name LIKE '%curve_subnet_plain.json'),
+norm AS (SELECT n FROM candidates WHERE name LIKE '%curve_subnet_norm.json')
+SELECT norm.n * 3 < plain.n AS pruned FROM plain, norm;
+----
+pruned
+t
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_subnet_norm WHERE curve(ip, t,
+   lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL))
+   @@ ts_between(ROW('10.0.0.10'::INET, NULL), ROW('2001:db8:3::'::INET, NULL), true, false))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_subnet
+   WHERE CASE WHEN ip >= '2001:db8:3::'::INET THEN false ELSE ip >= '10.0.0.10'::INET END AND t IS NOT NULL) AS outside;
+----
+outside
+t
+
+statement error
+SELECT curve('::1'::INET, 2, lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8::'::INET, NULL));
+----
+db error: ERROR: curve(): coordinate 1 needs finite bounds with lower < upper, got 2001:db8:1:: and 2001:db8::
+
+
+statement ok
+DROP TABLE curve_subnet;

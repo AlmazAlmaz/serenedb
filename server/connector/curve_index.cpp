@@ -118,6 +118,44 @@ uint64_t InetKey(uint8_t ip_type, duckdb::hugeint_t address) noexcept {
   return 0;
 }
 
+struct InetValue {
+  uint8_t ip_type = 0;
+  duckdb::hugeint_t address;
+};
+
+std::optional<InetValue> ToInet(const duckdb::Value& bound) {
+  if (!pg::IsInet(bound.type())) {
+    return std::nullopt;
+  }
+  const auto& parts = duckdb::StructValue::GetChildren(bound);
+  if (parts[0].IsNull() || parts[1].IsNull()) {
+    return std::nullopt;
+  }
+  return InetValue{.ip_type = parts[0].GetValue<uint8_t>(),
+                   .address = parts[1].GetValue<duckdb::hugeint_t>()};
+}
+
+absl::uint128 Ipv6Address(duckdb::hugeint_t address) noexcept {
+  return absl::MakeUint128(
+    static_cast<uint64_t>(address.upper) ^ irs::curve::kSignBit, address.lower);
+}
+
+uint64_t Ipv6RangeKey(const CurveAxis& axis, InetValue value) noexcept {
+  if (value.ip_type != kInetV6) {
+    return 0;
+  }
+  const auto offset =
+    std::clamp(Ipv6Address(value.address), axis.ipv6_lo, axis.ipv6_hi) -
+    axis.ipv6_lo;
+  const auto span = axis.ipv6_hi - axis.ipv6_lo;
+  const auto high = absl::Uint128High64(span);
+  if (high == 0) {
+    return absl::Uint128Low64(offset)
+           << std::countl_zero(absl::Uint128Low64(span));
+  }
+  return absl::Uint128Low64(offset >> (64 - std::countl_zero(high)));
+}
+
 struct RawBound {
   uint64_t key = 0;
   double value = 0;
@@ -214,15 +252,11 @@ std::optional<RawBound> ToRaw(CurveFamily family, const duckdb::Value& bound) {
                         bound.GetValue<duckdb::timestamp_tz_t>().value),
                       .exact = true};
     case CurveFamily::Inet: {
-      if (!pg::IsInet(bound.type())) {
+      const auto inet = ToInet(bound);
+      if (!inet) {
         return std::nullopt;
       }
-      const auto& parts = duckdb::StructValue::GetChildren(bound);
-      if (parts[0].IsNull() || parts[1].IsNull()) {
-        return std::nullopt;
-      }
-      return RawBound{.key = InetKey(parts[0].GetValue<uint8_t>(),
-                                     parts[1].GetValue<duckdb::hugeint_t>())};
+      return RawBound{.key = InetKey(inet->ip_type, inet->address)};
     }
     case CurveFamily::Null:
       return std::nullopt;
@@ -239,6 +273,11 @@ uint64_t MapKey(const CurveAxis& axis, uint64_t key) noexcept {
 uint64_t MapDouble(const CurveAxis& axis, double value) noexcept {
   return axis.normalized ? irs::curve::NormalizeDouble(value, axis.lo, axis.hi)
                          : irs::curve::EncodeDouble(value);
+}
+
+uint64_t InetAxisKey(const CurveAxis& axis, InetValue value) noexcept {
+  return axis.ipv6_range ? Ipv6RangeKey(axis, value)
+                         : MapKey(axis, InetKey(value.ip_type, value.address));
 }
 
 template<typename T>
@@ -277,9 +316,10 @@ uint64_t AxisKey(const CurveAxis& axis,
   if (axis.family == CurveFamily::Inet) {
     const auto& type = format.children[0].unified;
     const auto& address = format.children[1].unified;
-    return MapKey(axis, InetKey(Load<uint8_t>(type, type.sel->get_index(row)),
-                                Load<duckdb::hugeint_t>(
-                                  address, address.sel->get_index(row))));
+    return InetAxisKey(
+      axis, {.ip_type = Load<uint8_t>(type, type.sel->get_index(row)),
+             .address =
+               Load<duckdb::hugeint_t>(address, address.sel->get_index(row))});
   }
   switch (axis.type.id()) {
     case TINYINT:
@@ -367,8 +407,21 @@ const duckdb::Value* BoundComponent(const duckdb::Value& bounds,
             target.type.ToString(), "; cast the bound explicitly"));
 }
 
-void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
-               const duckdb::Value* upper) {
+[[noreturn]] void ThrowUnorderedBounds(duckdb::ClientContext& context,
+                                       uint32_t index,
+                                       const duckdb::Value& lower,
+                                       const duckdb::Value& upper) {
+  const auto text = [&](const duckdb::Value& value) {
+    return value.CastAs(context, duckdb::LogicalType::VARCHAR).ToString();
+  };
+  THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                  ERR_MSG("curve(): coordinate ", index + 1,
+                          " needs finite bounds with lower < upper, got ",
+                          text(lower), " and ", text(upper)));
+}
+
+void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
+               const duckdb::Value* lower, const duckdb::Value* upper) {
   if (!lower && !upper) {
     return;
   }
@@ -377,6 +430,20 @@ void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
       ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
       ERR_MSG("curve(): \"lower\" and \"upper\" must both bound coordinate ",
               index + 1, " or both leave it NULL"));
+  }
+  if (axis.family == CurveFamily::Inet) {
+    const auto lo = ToInet(*lower);
+    const auto hi = ToInet(*upper);
+    if (lo && hi && lo->ip_type == kInetV6 && hi->ip_type == kInetV6) {
+      axis.ipv6_lo = Ipv6Address(lo->address);
+      axis.ipv6_hi = Ipv6Address(hi->address);
+      if (axis.ipv6_lo >= axis.ipv6_hi) {
+        ThrowUnorderedBounds(context, index, *lower, *upper);
+      }
+      axis.normalized = true;
+      axis.ipv6_range = true;
+      return;
+    }
   }
   const auto lo = ToRaw(axis.family, *lower);
   if (!lo) {
@@ -392,10 +459,7 @@ void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
           lo->value < hi->value && std::isfinite(hi->value - lo->value)
       : lo->key < hi->key;
   if (!ordered) {
-    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
-                    ERR_MSG("curve(): coordinate ", index + 1,
-                            " needs finite bounds with lower < upper, got ",
-                            lower->ToString(), " and ", upper->ToString()));
+    ThrowUnorderedBounds(context, index, *lower, *upper);
   }
   axis.normalized = true;
   axis.key_lo = lo->key;
@@ -408,6 +472,13 @@ void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
 
 std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
                                       const duckdb::Value& bound) {
+  if (axis.family == CurveFamily::Inet) {
+    const auto inet = ToInet(bound);
+    if (!inet) {
+      return std::nullopt;
+    }
+    return CurveKey{.key = InetAxisKey(axis, *inet)};
+  }
   const auto raw = ToRaw(axis.family, bound);
   if (!raw) {
     return std::nullopt;
@@ -513,7 +584,7 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
   const auto lower = option(kLowerOption, "lower");
   const auto upper = option(kUpperOption, "upper");
   for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
-    Normalize(spec->axes[axis], axis,
+    Normalize(context, spec->axes[axis], axis,
               BoundComponent(lower, "lower", axis, options.dimensions),
               BoundComponent(upper, "upper", axis, options.dimensions));
   }

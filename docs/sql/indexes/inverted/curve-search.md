@@ -87,10 +87,10 @@ range of the data, per coordinate:
 
 <SqlLogicTest id="sql/indexes/inverted/curve-search/normalized" />
 
-Integers, dates, timestamps and INET are shifted so that the declared range
-starts at zero and fills the leading bits, which keeps every value inside the
-range distinct. FLOAT and DOUBLE values are mapped linearly onto the 64-bit
-range. Values outside the range take the position of the nearest end and are
+Integers, dates, timestamps and IPv4 addresses are shifted so that the declared
+range starts at zero and fills the leading bits, which keeps every value inside
+the range distinct. FLOAT and DOUBLE values are mapped linearly onto the 64-bit
+range. IPv6 ranges are described [below](#inet-coordinates). Values outside the range take the position of the nearest end and are
 still found, since the exact check compares the real values. A NULL component
 leaves that axis as it is; the bounds must be finite with `lower < upper`.
 
@@ -110,6 +110,15 @@ INET values order by family, then address, then mask. The curve places IPv4
 addresses in the lower half of the axis and IPv6 addresses in the upper half,
 by their leading 63 bits. Masks and the lowest IPv6 bits do not change the
 position; the exact check still compares them.
+
+When `lower` and `upper` of an INET coordinate are both IPv6 addresses, the axis
+measures the full 128-bit distance from `lower`. A range of up to 2^64
+addresses, such as one /64 subnet, keeps every address distinct; a wider range
+keeps the leading 64 bits of the distance. Addresses outside the range, IPv4
+addresses included, take the position of the nearest end. On 20,000 hosts of
+one /64 subnet, a box matching 239 rows produced 4,016 candidates without the
+range and 1,251 with `lower := ROW('2001:db8:1::'::INET, NULL)` and
+`upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL)`.
 
 ## Coverings
 
