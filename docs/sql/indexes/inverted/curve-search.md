@@ -6,86 +6,115 @@ split: headings
 
 import SqlLogicTest from "@site/src/components/SqlLogicTest";
 
-Use `curve(...)` to index a numeric tuple together with native inverted-index terms, bounded
-coverings and an exact scalar check of the candidates.
+`curve(...)` maps two to eight values to a position on a space-filling curve.
+An inverted index on that expression answers multidimensional range queries
+with bounded coverings and an exact check of the candidates.
 
-## Numeric tuples
+## The curve function
 
-A curve index is an expression index over `ROW(...)`, with two to eight
-coordinates. The expression can combine several columns with different types.
-Query the index by name and use the same tuple expression in
-`sdb_box_contains(point, lower, upper)`, or a conjunction of ranges on all
-components of that tuple:
-
-<SqlLogicTest id="sql/indexes/inverted/curve-search/points" />
-
-The endpoints are inclusive. A NULL component of a bound leaves that side of
-that dimension unconstrained. An inverted interval matches nothing. A wholly
-NULL point or bound makes the predicate NULL. A NULL coordinate contributes
-UNKNOWN when constrained and is ignored when unconstrained. Combining dimensions
-follows SQL AND: FALSE takes precedence over UNKNOWN. Thus partial boxes and
-negated boxes retain the per-column comparison semantics. Missing coordinates
-use a placeholder key for candidate generation and are checked against their
-stored validity during recheck. A wholly NULL tuple produces no terms; its
-`IS NULL` behavior is unchanged.
-
-Coordinates support signed integers through BIGINT, unsigned integers through
-UBIGINT, FLOAT/DOUBLE, DATE, TIMESTAMP and TIMESTAMPTZ. Integers retain all 64 bits;
-they are not converted to floating point. Signed widths can be mixed within a
-dimension, as can unsigned widths and FLOAT/DOUBLE. Bounds must use the same
-family as their coordinate, except that integer bounds are accepted for FLOAT
-and DOUBLE coordinates; cast other bounds explicitly. Dates, timestamps and
-timestamps with time zones are distinct families. Decimal, 128-bit integers and
-other timestamp resolutions require an explicit conversion before indexing.
-Floating point values compare as in SQL: NaN equals NaN and sorts above
-positive infinity, and negative zero equals positive zero.
-
-The scalar predicate also works on an ordinary table. Against an index, a
-positive predicate with constant bounds uses the term index, followed by the
-same scalar predicate. Negated predicates, OR expressions and nonconstant bounds
-retain scalar evaluation; an approximation is never negated and treated as exact.
-A box with an open side, a NULL component in either bound, is evaluated by the
-scalar predicate too: every curve cell constrains all dimensions at once, so the
-index cannot prune by the dimensions that are left unconstrained.
-
-Ordinary ranges use curve covering when every component has both a lower
-and an upper constant bound. Supported predicates are `BETWEEN`, `>=`, `<=`,
-`>`, `<` and `=`; equality supplies both endpoints, and several ranges on one
-component are intersected. Strict comparisons exclude their endpoint from the
-covering box. The covering selects candidates; the original predicates still
-provide the exact check.
-
-Components match the column or identical expression in the indexed `ROW(...)`.
-Order-preserving widening casts within the signed or unsigned integer family,
-and FLOAT to DOUBLE, can also match the original component. Bounds follow the
-coordinate families above; NULL and nonconstant bounds do not supply endpoints.
-Partial tuples, OR expressions and NOT expressions retain scalar evaluation.
-
-## Options and bounds
-
-The opclass requires parentheses. Its options are stored with the index:
+`curve(c1, ..., cN)` is an ordinary scalar function: it can be selected,
+compared, stored or used in `ORDER BY`, which sorts the rows along the curve.
+It returns the code of the point's deepest cell as a BLOB, and NULL when any
+coordinate is NULL. The options are named arguments with constant values:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `curve` | `'morton'` | `'morton'` or `'hilbert'`. |
+| `kind` | `'morton'` | `'morton'` or `'hilbert'`. |
 | `max_level` | `64` | 0 through 64 coordinate bits used for cells. Smaller values reduce depth and precision. Level 0 is the whole domain. |
-| `max_cells` | `64` | 1 through 4096 covering cells per query. |
-| `level_step` | `1 + 4 / dimensions` | 1 through `1 + 12 / dimensions`. A point is indexed at every `level_step`-th level and at `max_level`. |
+| `level_step` | `1 + 4 / dimensions` | 1 through `1 + 12 / dimensions`. An index writes a point at every `level_step`-th level and at `max_level`. |
+| `max_cells` | `64` | 1 through 4096 covering cells per query of an index on this call. |
+| `lower`, `upper` | NULL | `ROW(...)`s with one value per coordinate that normalize the axes, see [below](#axis-normalization). |
 
-There are no declared spatial bounds. Each axis uses the complete ordered
-64-bit representation of its type. For doubles this is an order-preserving
-IEEE-754 encoding, so levels measure representable bits rather than a fixed
-physical distance. This avoids clipping coordinates or rebuilding an index when
-the domain grows. Different columns can select different depth and cell budgets.
+Coordinates can be signed integers through BIGINT, unsigned integers through
+UBIGINT, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ and INET, and can be
+expressions over several columns. Integers keep all 64 bits; they are not
+converted to floating point. Decimals, 128-bit integers and other timestamp
+resolutions need an explicit cast. Floating point values order as in SQL: NaN
+equals NaN and sorts above positive infinity, and negative zero equals positive
+zero.
+
+## Indexing and searching
+
+Index the call as an expression, with the coordinate columns included for the
+exact check, query the index by name and match the same call with
+`@@ ts_between(lower, upper, lower_inclusive, upper_inclusive)`:
+
+<SqlLogicTest id="sql/indexes/inverted/curve-search/points" />
+
+The left side must be the indexed call itself: the same coordinates and the
+same options. `lower` and `upper` are `ROW(...)`s with one bound per
+coordinate. A NULL component, or a NULL `ROW`, leaves that side of that
+coordinate open, and an inverted interval matches nothing. The inclusivity
+flags apply to every coordinate; for mixed endpoints, write ordinary ranges.
+The condition holds when every coordinate is within its bounds, so a row with
+a NULL coordinate never matches, as its `curve(...)` value is NULL.
+
+The index selects candidates with a covering of the box, and the condition is
+replaced by the exact comparisons of the coordinates, `x >= 0 AND x <= 10` and
+so on, which run on the candidates only; `EXPLAIN` shows them as the column
+filter of the index scan. The bounds must be constants or parameters of a
+prepared statement. The condition must be a top-level `AND` term of the
+`WHERE` clause: inside `OR` or `NOT` it is rejected, because `@@` has no
+evaluation outside the index.
+
+Bounds use the family of their coordinate. Integer bounds are accepted for
+every integer coordinate and for FLOAT and DOUBLE, decimal and floating point
+bounds for FLOAT and DOUBLE; dates, timestamps, timestamps with time zone and
+INET need bounds of their own type. Cast other bounds explicitly.
+
+Ordinary ranges also use the curve when every coordinate of an indexed call
+has both a lower and an upper constant bound. Supported predicates are
+`BETWEEN`, `>=`, `<=`, `>`, `<` and `=`; equality supplies both endpoints, and
+several ranges on one coordinate are intersected. Coordinates match the
+arguments of the indexed call, also through order-preserving widening casts
+within the signed or unsigned integer family and from FLOAT to DOUBLE. The
+covering selects candidates; the original predicates stay as the exact check.
+
+A strict endpoint is left out of the covering box when the coordinate maps
+values one to one: integers, floating point values, dates and timestamps
+without normalization. Normalized axes and INET can map several values to one
+position, so a strict endpoint stays in the box and only the exact check
+removes it.
+
+## Axis normalization
+
+Each axis uses the complete ordered 64-bit representation of its type, and
+the cells split every axis at the same bits. When the values of an axis use a
+small part of that range -- small integers next to large ones, or doubles in a
+narrow range far from zero, whose leading bits are the sign and the exponent
+-- most levels split nothing on that axis. `lower` and `upper` declare the
+range of the data, per coordinate:
+
+<SqlLogicTest id="sql/indexes/inverted/curve-search/normalized" />
+
+Integers, dates, timestamps and INET are shifted so that the declared range
+starts at zero and fills the leading bits, which keeps every value inside the
+range distinct. FLOAT and DOUBLE values are mapped linearly onto the 64-bit
+range. Values outside the range take the position of the nearest end and are
+still found, since the exact check compares the real values. A NULL component
+leaves that axis as it is; the bounds must be finite with `lower < upper`.
+
+On 10,000 points with `x` in `[0, 100)` and `y` in `[0, 10^9)`, a box matching
+220 rows produced 2,003 candidates without normalization and 234 with it. With
+DOUBLE values in `[1000, 1001]` and `max_level := 24`, the same box produced
+3,750 candidates without normalization and 239 with it. The bounds are part of
+the call, so the query repeats them.
+
+## INET coordinates
+
+INET values order by family, then address, then mask. The curve places IPv4
+addresses in the lower half of the axis and IPv6 addresses in the upper half,
+by their leading 63 bits. Masks and the lowest IPv6 bits do not change the
+position; the exact check still compares them.
+
+## Coverings
 
 Covering considers both interior and boundary cells. When refining a cell would
-exceed the budget, the parent remains in the cover. Coverage is widened rather
-than truncated, so reducing the budget cannot lose matches.
-The cell budget is not a limit on returned documents: a coarse cover
-can require checking every row.
-
-Numeric points are always indexed at the configured maximum depth, so a numeric
-box needs only one query term per covering cell when every level is indexed.
+exceed `max_cells`, the parent remains in the cover. Coverage is widened rather
+than truncated, so reducing the budget cannot lose matches. The cell budget is
+not a limit on returned documents: a coarse cover can require checking every
+row. An open side leaves that axis unconstrained, and every cell constrains all
+axes at once, so a box that is open on most axes prunes little.
 
 A point writes a term for each indexed level: every `level_step`-th level and
 `max_level`, `max_level / level_step + 2` terms at most. Most of the levels hold
@@ -109,16 +138,17 @@ cover into up to 1,233 query terms.
 indexed level writes one term per row. Doubles, dates and timestamps usually
 differ within their upper bits, because the ordered encoding starts with the
 sign and the exponent, so a shallower index often selects the same candidates.
-On one million uniform DOUBLE points in three dimensions, `max_level=32`
+On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
 range 1000 wide, with an index of 122 MB instead of 427 MB built in 0.66 s
 instead of 1.82 s. Integers are different: identifiers or counts far below
-`2^32` share their upper 32 bits, so at `max_level=32` every row falls into the
-same cell and the index stops pruning. A box on one million BIGINT pairs read
-1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
-floating point and time tuples whose values differ within that many bits, keep
-64 for integer coordinates, and compare `rows_scanned` on the application's own
-boxes.
+`2^32` share their upper 32 bits, so at `max_level := 32` every row falls into
+the same cell and the index stops pruning. A box on one million BIGINT pairs
+read 1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
+floating point and time coordinates whose values differ within that many bits,
+or declare `lower` and `upper` so that the leading bits cover the data; keep 64
+for unnormalized integer coordinates, and compare `rows_scanned` on the
+application's own boxes.
 
 Building an index buffers up to `segment_memory_max` per build worker (see
 [write memory](maintenance.md#write-memory)), and a curve index writes more
@@ -141,11 +171,11 @@ independent three-dimensional points such boxes run 12 to 26 times faster than
 intersecting per-column ranges. A full scan of one million rows takes about
 2 ms, so at that size the index beats a scan by at most about two times; on ten
 million rows selective boxes run up to six times faster than a scan.
-Correlated data narrows the gap: small boxes on correlated data are a tie, wide
-correlated boxes lose to a scan, and a box with an open side is evaluated by
-the scalar predicate. At the default depth the index costs five to six times
-the build time and four times the size of a per-column index. Benchmark the
-application's own distributions before choosing a budget, a step or a depth.
+Correlated data narrows the gap: small boxes on correlated data are a tie, and
+wide correlated boxes lose to a scan. At the default depth the index costs five
+to six times the build time and four times the size of a per-column index.
+Benchmark the application's own distributions before choosing a budget, a step
+or a depth.
 
 For a streaming index scan, `rows_scanned` in JSON profiling counts hits emitted
 by the posting filter after zonemap skipping and before
