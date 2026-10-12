@@ -48,11 +48,12 @@ A box with an open side, a NULL component in either bound, is evaluated by the
 scalar predicate too: every curve cell constrains all dimensions at once, so the
 index cannot prune by the dimensions that are left unconstrained.
 
-Ordinary ranges use the same covering when every component has both a lower
+Ordinary ranges use curve covering when every component has both a lower
 and an upper constant bound. Supported predicates are `BETWEEN`, `>=`, `<=`,
 `>`, `<` and `=`; equality supplies both endpoints, and several ranges on one
-component are intersected. The covering selects candidates; the original
-predicates still provide the exact check, including strict endpoints.
+component are intersected. Strict comparisons exclude their endpoint from the
+covering box. The covering selects candidates; the original predicates still
+provide the exact check.
 
 Components match the column or identical expression in the indexed `ROW(...)`.
 Order-preserving widening casts within the signed or unsigned integer family,
