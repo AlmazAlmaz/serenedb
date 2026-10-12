@@ -10,7 +10,7 @@ INSERT INTO curve_metrics VALUES
  (3,NULL,NULL);
 
 statement ok
-CREATE INDEX curve_metrics_p ON curve_metrics USING inverted(id,(ROW(x,y)) curve(max_level=0)) INCLUDE(x,y);
+CREATE INDEX curve_metrics_p ON curve_metrics USING inverted(id, (curve(x, y, max_level := 0))) INCLUDE(x,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_metrics;
@@ -22,7 +22,7 @@ statement ok
 SET profiling_output = '${__TEST_DIR__}/curve_point.json';
 
 query
-SELECT max(id) FROM curve_metrics_p WHERE sdb_box_contains(ROW(x,y),ROW(-1,-1),ROW(1,1));
+SELECT max(id) FROM curve_metrics_p WHERE curve(x, y, max_level := 0) @@ ts_between(ROW(-1,-1), ROW(1,1), true, true);
 ----
 max
 1
@@ -36,7 +36,7 @@ FROM read_text('${__TEST_DIR__}/curve_point.json') f, json_tree(f.content) j
 WHERE j.key='rows_scanned';
 ----
 candidates
-3
+2
 
 statement ok
 DROP TABLE curve_metrics;
@@ -49,7 +49,7 @@ INSERT INTO curve_range_metrics SELECT i, i % 64, i // 64 FROM range(4096) t(i);
 
 statement ok
 CREATE INDEX curve_range_metrics_idx ON curve_range_metrics USING inverted(
- id, (ROW(x,y)) curve(max_cells=16)) INCLUDE (x,y);
+ id, (curve(x, y, max_cells := 16))) INCLUDE (x,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_range_metrics;
@@ -70,7 +70,7 @@ statement ok
 SET profiling_output = '${__TEST_DIR__}/curve_range_box.json';
 
 query
-SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE sdb_box_contains(ROW(x,y), ROW(20,20), ROW(25,25));
+SELECT sum(id) AS total FROM curve_range_metrics_idx WHERE curve(x, y, max_cells := 16) @@ ts_between(ROW(20,20), ROW(25,25), true, true);
 ----
 total
 52650
@@ -139,7 +139,7 @@ t	t	t
 
 statement ok
 CREATE INDEX curve_range_metrics_expr ON curve_range_metrics USING inverted(
- id, (ROW(abs(x - 32), abs(y - 32))) curve(max_cells=16)) INCLUDE (x,y);
+ id, (curve(abs(x - 32), abs(y - 32), max_cells := 16))) INCLUDE (x,y);
 
 statement ok
 VACUUM (REFRESH_TABLE) curve_range_metrics;
@@ -160,7 +160,7 @@ statement ok
 SET profiling_output = '${__TEST_DIR__}/curve_range_expr_box.json';
 
 query
-SELECT count(id) AS n FROM curve_range_metrics_expr WHERE sdb_box_contains(ROW(abs(x - 32), abs(y - 32)),ROW(2,2),ROW(4,4));
+SELECT count(id) AS n FROM curve_range_metrics_expr WHERE curve(abs(x - 32), abs(y - 32), max_cells := 16) @@ ts_between(ROW(2,2), ROW(4,4), true, true);
 ----
 n
 36
@@ -182,3 +182,100 @@ t	t
 
 statement ok
 DROP TABLE curve_range_metrics;
+
+statement ok
+CREATE TABLE curve_scales(id INTEGER PRIMARY KEY, x BIGINT, y BIGINT, d DOUBLE);
+
+statement ok
+INSERT INTO curve_scales SELECT i, i % 100, (i * 7919 % 10000) * 100000,
+ 1000 + (i * 104729 % 10000) / 10000.0 FROM range(10000) t(i);
+
+statement ok
+CREATE INDEX curve_scales_plain ON curve_scales USING inverted(id, (curve(x, y))) INCLUDE (x, y);
+
+statement ok
+CREATE INDEX curve_scales_norm ON curve_scales USING inverted(
+ id, (curve(x, y, lower := ROW(0, 0), upper := ROW(99, 999999999)))) INCLUDE (x, y);
+
+statement ok
+CREATE INDEX curve_scales_double ON curve_scales USING inverted(
+ id, (curve(x, d, max_level := 24))) INCLUDE (x, d);
+
+statement ok
+CREATE INDEX curve_scales_double_norm ON curve_scales USING inverted(
+ id, (curve(x, d, max_level := 24, lower := ROW(0, 1000), upper := ROW(99, 1001)))) INCLUDE (x, d);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_scales;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_scales_plain.json';
+
+query
+SELECT sum(id) AS total FROM curve_scales_plain WHERE curve(x, y) @@ ts_between(
+ ROW(10, 200000000), ROW(20, 400000000), true, true);
+----
+total
+1096300
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_scales_norm.json';
+
+query
+SELECT sum(id) AS total FROM curve_scales_norm WHERE curve(x, y, lower := ROW(0, 0), upper := ROW(99, 999999999)) @@ ts_between(
+ ROW(10, 200000000), ROW(20, 400000000), true, true);
+----
+total
+1096300
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_scales_double.json';
+
+query
+SELECT sum(id) AS total FROM curve_scales_double WHERE curve(x, d, max_level := 24) @@ ts_between(
+ ROW(10, 1000.2), ROW(20, 1000.4), true, true);
+----
+total
+1088300
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_scales_double_norm.json';
+
+query
+SELECT sum(id) AS total FROM curve_scales_double_norm WHERE curve(x, d, max_level := 24, lower := ROW(0, 1000), upper := ROW(99, 1001)) @@ ts_between(
+ ROW(10, 1000.2), ROW(20, 1000.4), true, true);
+----
+total
+1088300
+
+statement ok
+RESET enable_profiling;
+
+query
+SELECT
+ (SELECT sum(id) FROM curve_scales WHERE x BETWEEN 10 AND 20 AND y BETWEEN 200000000 AND 400000000) AS exact,
+ (SELECT sum(id) FROM curve_scales WHERE x BETWEEN 10 AND 20 AND d BETWEEN 1000.2 AND 1000.4) AS exact_double;
+----
+exact	exact_double
+1096300	1088300
+
+query
+WITH candidates AS (
+ SELECT f.filename AS name, max(CAST(j.atom AS BIGINT)) AS n
+ FROM read_text('${__TEST_DIR__}/curve_scales_*.json') f, json_tree(f.content) j
+ WHERE j.key='rows_scanned' GROUP BY f.filename),
+plain AS (SELECT n FROM candidates WHERE name LIKE '%curve_scales_plain.json'),
+norm AS (SELECT n FROM candidates WHERE name LIKE '%curve_scales_norm.json'),
+dbl AS (SELECT n FROM candidates WHERE name LIKE '%curve_scales_double.json'),
+dbl_norm AS (SELECT n FROM candidates WHERE name LIKE '%curve_scales_double_norm.json')
+SELECT norm.n * 4 < plain.n AS scales_pruned, dbl_norm.n * 4 < dbl.n AS doubles_pruned,
+ norm.n < 440 AND dbl_norm.n < 440 AS close FROM plain, norm, dbl, dbl_norm;
+----
+scales_pruned	doubles_pruned	close
+t	t	t
+
+statement ok
+DROP TABLE curve_scales;

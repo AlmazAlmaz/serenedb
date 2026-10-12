@@ -25,10 +25,17 @@
 #include <duckdb/planner/expression/bound_cast_expression.hpp>
 #include <duckdb/planner/expression/bound_comparison_expression.hpp>
 #include <duckdb/planner/expression/bound_conjunction_expression.hpp>
+#include <duckdb/planner/expression/bound_constant_expression.hpp>
 #include <duckdb/planner/expression/bound_function_expression.hpp>
+#include <duckdb/planner/expression/bound_operator_expression.hpp>
 #include <iresearch/utils/down_cast.hpp>
+#include <iresearch/utils/pg/errcodes.hpp>
+#include <iresearch/utils/pg/sql_exception_macro.hpp>
 
 #include "connector/curve_index.h"
+#include "connector/functions/search.h"
+#include "connector/functions/ts_query_codec.h"
+#include "connector/pg_logical_types.h"
 
 namespace sdb::connector {
 namespace {
@@ -42,6 +49,15 @@ const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
     }
   }
   return expr;
+}
+
+const duckdb::Expression& PeelCasts(const duckdb::Expression& expr) {
+  const auto* result = &expr;
+  while (duckdb::BoundCastExpression::IsCast(*result)) {
+    result = &duckdb::BoundCastExpression::Child(
+      result->Cast<duckdb::BoundFunctionExpression>());
+  }
+  return *result;
 }
 
 uint32_t IntegerWidth(duckdb::LogicalTypeId type) {
@@ -70,23 +86,6 @@ bool IsUnsigned(duckdb::LogicalTypeId type) {
          type == UBIGINT;
 }
 
-std::pair<uint64_t, uint64_t> CoordinateLimits(duckdb::LogicalTypeId type) {
-  using enum duckdb::LogicalTypeId;
-  if (type == FLOAT || type == DOUBLE) {
-    return {irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
-            irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN())};
-  }
-  const auto width = type == DATE ? 32 : IntegerWidth(type);
-  if (width == 0 || width == 64) {
-    return {0, std::numeric_limits<uint64_t>::max()};
-  }
-  if (IsUnsigned(type)) {
-    return {0, (uint64_t{1} << width) - 1};
-  }
-  const auto half = uint64_t{1} << (width - 1);
-  return {irs::curve::kSignBit - half, irs::curve::kSignBit + half - 1};
-}
-
 bool IsWideningCast(const duckdb::Expression& expression) {
   if (!duckdb::BoundCastExpression::IsCast(expression)) {
     return false;
@@ -102,25 +101,17 @@ bool IsWideningCast(const duckdb::Expression& expression) {
           IsUnsigned(source) == IsUnsigned(target));
 }
 
-bool Fold(duckdb::ClientContext& context, const duckdb::Expression& expression,
-          duckdb::Value& value) {
+std::optional<duckdb::Value> Fold(duckdb::ClientContext& context,
+                                  const duckdb::Expression& expression) {
   if (!expression.IsFoldable() || expression.HasParameter()) {
-    return false;
+    return std::nullopt;
   }
   auto copy = expression.Copy();
-  return duckdb::ExpressionExecutor::TryEvaluateScalar(context, *copy, value) &&
-         !value.IsNull();
-}
-
-bool IsClosedBox(const duckdb::Value& lower, const duckdb::Value& upper) {
-  for (const auto* bound : {&lower, &upper}) {
-    for (const auto& component : duckdb::StructValue::GetChildren(*bound)) {
-      if (component.IsNull()) {
-        return false;
-      }
-    }
+  duckdb::Value value;
+  if (!duckdb::ExpressionExecutor::TryEvaluateScalar(context, *copy, value)) {
+    return std::nullopt;
   }
-  return true;
+  return value;
 }
 
 void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
@@ -142,6 +133,97 @@ void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
   }
   SetMinMatch(*candidates, 1);
   root.Add(std::move(candidates), irs::Occur::Must);
+}
+
+void RaiseMin(uint64_t& min, CurveKey bound, bool inclusive, bool& empty) {
+  if (!inclusive && bound.exact) {
+    if (bound.key == std::numeric_limits<uint64_t>::max()) {
+      empty = true;
+      return;
+    }
+    ++bound.key;
+  }
+  min = std::max(min, bound.key);
+}
+
+void LowerMax(uint64_t& max, CurveKey bound, bool inclusive, bool& empty) {
+  if (!inclusive && bound.exact) {
+    if (bound.key == 0) {
+      empty = true;
+      return;
+    }
+    --bound.key;
+  }
+  max = std::min(max, bound.key);
+}
+
+[[noreturn]] void ThrowUnsupportedQuery() {
+  THROW_SQL_ERROR(
+    ERR_CODE(ERRCODE_FEATURE_NOT_SUPPORTED),
+    ERR_MSG("curve() @@ supports only ts_between(ROW(...), ROW(...), "
+            "lower_inclusive, upper_inclusive) with constant arguments"));
+}
+
+const duckdb::Value* Component(const duckdb::Value& bounds, uint32_t axis,
+                               uint32_t dimensions) {
+  if (bounds.IsNull()) {
+    return nullptr;
+  }
+  if (!duckdb::StructType::IsStruct(bounds.type()) ||
+      pg::IsInet(bounds.type()) ||
+      duckdb::StructType::GetChildCount(bounds.type()) != dimensions) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+      ERR_MSG("ts_between bounds of a curve() must be ROWs of ", dimensions,
+              " values, got ", bounds.type().ToString()));
+  }
+  const auto& component = duckdb::StructValue::GetChildren(bounds)[axis];
+  return component.IsNull() ? nullptr : &component;
+}
+
+CurveKey QueryKey(const CurveAxis& axis, const duckdb::Value& bound,
+                  uint32_t index) {
+  const auto key = axis.BoundKey(bound);
+  if (!key) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+      ERR_MSG("ts_between: bound ", bound.type().ToString(),
+              " does not match coordinate ", index + 1, " of type ",
+              axis.type.ToString(), "; cast the bound explicitly"));
+  }
+  return *key;
+}
+
+duckdb::unique_ptr<duckdb::Expression> Compare(
+  duckdb::ClientContext& context, duckdb::ExpressionType type,
+  const duckdb::Expression& coordinate, const duckdb::Value& bound) {
+  const bool inet = pg::IsInet(coordinate.GetReturnType());
+  const auto comparison =
+    inet ? duckdb::NegateComparisonExpression(type) : type;
+  const auto common = duckdb::BoundComparisonExpression::BindComparison(
+    context, coordinate.GetReturnType(), bound.type(), comparison);
+  auto result = duckdb::BoundComparisonExpression::Create(
+    comparison,
+    duckdb::BoundCastExpression::AddCastToType(context, coordinate.Copy(),
+                                               common),
+    duckdb::BoundCastExpression::AddCastToType(
+      context, duckdb::make_uniq<duckdb::BoundConstantExpression>(bound),
+      common));
+  if (!inet) {
+    return result;
+  }
+  auto negation = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
+    duckdb::ExpressionType::OPERATOR_NOT, duckdb::LogicalType::BOOLEAN);
+  negation->GetChildrenMutable().push_back(std::move(result));
+  return negation;
+}
+
+duckdb::unique_ptr<duckdb::Expression> IsNotNull(
+  const duckdb::Expression& coordinate) {
+  auto check = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
+    duckdb::ExpressionType::OPERATOR_IS_NOT_NULL, duckdb::LogicalType::BOOLEAN);
+  check->GetChildrenMutable().push_back(coordinate.Copy());
+  return check;
 }
 
 void CollectRanges(const duckdb::Expression& expression,
@@ -213,49 +295,114 @@ void CollectRanges(const duckdb::Expression& expression,
 
 }  // namespace
 
-bool AddCurveCandidates(irs::BooleanFilter& root,
-                        const duckdb::Expression& expression,
-                        const ColumnGetter& columns,
-                        const ExpressionGetter& expressions,
-                        duckdb::ClientContext& context) {
-  if (expression.GetExpressionClass() !=
+bool ClaimCurveMatch(
+  irs::BooleanFilter& root,
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& filters, size_t index,
+  const ExpressionGetter& expressions, duckdb::ClientContext& context) {
+  const auto& conjunct = *filters[index];
+  if (conjunct.GetExpressionClass() !=
         duckdb::ExpressionClass::BOUND_FUNCTION ||
-      expression.HasParameter()) {
+      conjunct.HasParameter()) {
     return false;
   }
-  const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
-  const auto& name = function.Function().GetName();
-  const auto& args = function.GetChildren();
-  if (name != "sdb_box_contains" || args.size() != 3) {
+  const auto& match = conjunct.Cast<duckdb::BoundFunctionExpression>();
+  if (match.Function().GetName().GetIdentifierName() != kTSQueryMatch ||
+      match.GetChildren().size() != 2) {
     return false;
   }
-  const auto find =
-    [&](const duckdb::Expression& argument) -> std::optional<SearchColumnInfo> {
-    const auto& expr = PeelCast(argument);
-    auto result =
-      expr.GetExpressionClass() == duckdb::ExpressionClass::BOUND_COLUMN_REF
-        ? columns(expr.Cast<duckdb::BoundColumnRefExpression>())
-        : expressions(expr);
-    if (!result || !result->tokenizer.analyzer ||
-        result->tokenizer.analyzer->type() != irs::Type<CurveTokenizer>::id()) {
-      return std::nullopt;
+  const auto& curve = *match.GetChildren()[0];
+  const auto* spec = TryGetCurveSpec(curve);
+  if (!spec) {
+    return false;
+  }
+  const auto info = expressions(curve);
+  if (!info || !info->tokenizer.analyzer ||
+      info->tokenizer.analyzer->type() != irs::Type<CurveTokenizer>::id()) {
+    return false;
+  }
+  const auto* query = &PeelCasts(*match.GetChildren()[1]);
+  duckdb::unique_ptr<duckdb::Expression> parsed;
+  if (query->GetExpressionClass() == duckdb::ExpressionClass::BOUND_CONSTANT) {
+    const auto parts = TryGetTSQueryParts(
+      query->Cast<duckdb::BoundConstantExpression>().GetValue());
+    if (parts && !HasModifiers(*parts)) {
+      parsed = TryParseStructuredTSQueryText(parts->text, context);
     }
-    return result;
-  };
-  auto info = find(*args[0]);
-  if (!info) {
-    return false;
+    if (!parsed) {
+      ThrowUnsupportedQuery();
+    }
+    query = &PeelCasts(*parsed);
   }
-  duckdb::Value lower, upper;
-  if (!Fold(context, *args[1], lower) || !Fold(context, *args[2], upper)) {
-    return false;
+  if (query->GetExpressionClass() != duckdb::ExpressionClass::BOUND_FUNCTION) {
+    ThrowUnsupportedQuery();
   }
-  ValidateCurveBounds(info->logical_type, lower.type(), upper.type());
-  if (!IsClosedBox(lower, upper)) {
-    return false;
+  const auto& between = query->Cast<duckdb::BoundFunctionExpression>();
+  const auto& args = between.GetChildren();
+  if (between.Function().GetName().GetIdentifierName() != kTSQBetween ||
+      args.size() != 4) {
+    ThrowUnsupportedQuery();
   }
-  const auto box = CurveBox(info->logical_type, lower, upper);
-  AddBoxCandidates(root, *info, box);
+  const auto lower = Fold(context, *args[0]);
+  const auto upper = Fold(context, *args[1]);
+  const auto lower_inclusive = Fold(context, *args[2]);
+  const auto upper_inclusive = Fold(context, *args[3]);
+  if (!lower || !upper || !lower_inclusive || !upper_inclusive ||
+      lower_inclusive->IsNull() || upper_inclusive->IsNull()) {
+    ThrowUnsupportedQuery();
+  }
+  const auto include_lower = lower_inclusive->GetValue<bool>();
+  const auto include_upper = upper_inclusive->GetValue<bool>();
+
+  const auto dimensions = spec->options.dimensions;
+  const auto& coordinates =
+    curve.Cast<duckdb::BoundFunctionExpression>().GetChildren();
+  irs::curve::Box box;
+  bool empty = false;
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> rechecks;
+  for (uint32_t axis = 0; axis < dimensions; ++axis) {
+    const auto& target = spec->axes[axis];
+    const auto& coordinate = *coordinates[axis];
+    std::tie(box.min[axis], box.max[axis]) = target.Limits();
+    const auto* lo = Component(*lower, axis, dimensions);
+    const auto* hi = Component(*upper, axis, dimensions);
+    if (target.family == CurveFamily::Null) {
+      empty = true;
+    }
+    if (lo) {
+      if (!empty) {
+        RaiseMin(box.min[axis], QueryKey(target, *lo, axis), include_lower,
+                 empty);
+      }
+      rechecks.push_back(Compare(
+        context,
+        include_lower ? duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO
+                      : duckdb::ExpressionType::COMPARE_GREATERTHAN,
+        coordinate, *lo));
+    }
+    if (hi) {
+      if (!empty) {
+        LowerMax(box.max[axis], QueryKey(target, *hi, axis), include_upper,
+                 empty);
+      }
+      rechecks.push_back(Compare(
+        context,
+        include_upper ? duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO
+                      : duckdb::ExpressionType::COMPARE_LESSTHAN,
+        coordinate, *hi));
+    }
+    if (!lo && !hi) {
+      rechecks.push_back(IsNotNull(coordinate));
+    }
+  }
+  if (empty) {
+    root.Add(std::make_unique<irs::Empty>(), irs::Occur::Must);
+  } else {
+    AddBoxCandidates(root, *info, box);
+  }
+  filters[index] = std::move(rechecks.front());
+  for (size_t i = 1; i < rechecks.size(); ++i) {
+    filters.push_back(std::move(rechecks[i]));
+  }
   return true;
 }
 
@@ -273,31 +420,25 @@ std::vector<CurveRange> CollectCurveRanges(
 
 bool AddCurveRangeCandidates(irs::BooleanFilter& root,
                              std::span<const CurveRange> ranges,
-                             const duckdb::Expression& tuple,
+                             const duckdb::Expression& key,
                              const SearchColumnInfo& info,
                              duckdb::ClientContext& context) {
-  const auto& point = PeelCast(tuple);
-  if (point.GetExpressionClass() != duckdb::ExpressionClass::BOUND_FUNCTION) {
+  const auto* spec = TryGetCurveSpec(key);
+  if (!spec) {
     return false;
   }
-  const auto& function = point.Cast<duckdb::BoundFunctionExpression>();
-  const auto& components = function.GetChildren();
-  const auto dimensions = duckdb::StructType::GetChildCount(info.logical_type);
-  if (function.Function().GetName() != "row" ||
-      components.size() != dimensions) {
-    return false;
-  }
+  const auto& coordinates =
+    key.Cast<duckdb::BoundFunctionExpression>().GetChildren();
   irs::curve::Box box;
   bool empty = false;
-  for (uint32_t axis = 0; axis < dimensions; ++axis) {
+  for (uint32_t axis = 0; axis < spec->options.dimensions; ++axis) {
+    const auto& target = spec->axes[axis];
     bool has_lower = false;
     bool has_upper = false;
-    const auto& coordinate =
-      duckdb::StructType::GetChildTypes(info.logical_type)[axis].second;
-    std::tie(box.min[axis], box.max[axis]) = CoordinateLimits(coordinate.id());
+    std::tie(box.min[axis], box.max[axis]) = target.Limits();
+    const auto& indexed = PeelCast(*coordinates[axis]);
     for (const auto& range : ranges) {
-      auto* component = &PeelCast(*range.component);
-      const auto& indexed = PeelCast(*components[axis]);
+      const auto* component = &PeelCast(*range.component);
       bool matched = component->Equals(indexed);
       while (!matched && IsWideningCast(*component)) {
         component = &PeelCast(duckdb::BoundCastExpression::Child(
@@ -307,39 +448,26 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
       if (!matched) {
         continue;
       }
-      duckdb::vector<duckdb::Value> lower_values(dimensions);
-      duckdb::vector<duckdb::Value> upper_values(dimensions);
-      if ((range.lower && !Fold(context, *range.lower, lower_values[axis])) ||
-          (range.upper && !Fold(context, *range.upper, upper_values[axis]))) {
-        continue;
-      }
-      if (!CurveBoundFits(coordinate, lower_values[axis].type()) ||
-          !CurveBoundFits(coordinate, upper_values[axis].type())) {
-        continue;
-      }
-      const auto lower = duckdb::Value::TUPLE(std::move(lower_values));
-      const auto upper = duckdb::Value::TUPLE(std::move(upper_values));
-      auto limits = CurveBox(info.logical_type, lower, upper);
+      std::optional<CurveKey> lower;
+      std::optional<CurveKey> upper;
       if (range.lower) {
-        if (!range.lower_inclusive) {
-          if (limits.min[axis] == std::numeric_limits<uint64_t>::max()) {
-            empty = true;
-          } else {
-            ++limits.min[axis];
-          }
+        const auto value = Fold(context, *range.lower);
+        if (!value || value->IsNull() || !(lower = target.BoundKey(*value))) {
+          continue;
         }
-        box.min[axis] = std::max(box.min[axis], limits.min[axis]);
-        has_lower = true;
       }
       if (range.upper) {
-        if (!range.upper_inclusive) {
-          if (limits.max[axis] == 0) {
-            empty = true;
-          } else {
-            --limits.max[axis];
-          }
+        const auto value = Fold(context, *range.upper);
+        if (!value || value->IsNull() || !(upper = target.BoundKey(*value))) {
+          continue;
         }
-        box.max[axis] = std::min(box.max[axis], limits.max[axis]);
+      }
+      if (lower) {
+        RaiseMin(box.min[axis], *lower, range.lower_inclusive, empty);
+        has_lower = true;
+      }
+      if (upper) {
+        LowerMax(box.max[axis], *upper, range.upper_inclusive, empty);
         has_upper = true;
       }
     }

@@ -1934,6 +1934,15 @@ void FromTSQueryMatch(BoolTarget filter, const FilterContext& ctx,
                "index relation (FROM <index_name>). CREATE INDEX ... USING "
                "inverted(<col>) if none exists."));
   }
+  if (column_info->tokenizer.analyzer &&
+      column_info->tokenizer.analyzer->type() ==
+        irs::Type<CurveTokenizer>::id()) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_FEATURE_NOT_SUPPORTED),
+      ERR_MSG("curve() @@ is supported only as a top-level AND condition"),
+      ERR_HINT("Move it out of OR / NOT, or compare the coordinates "
+               "directly."));
+  }
   const auto& expr = left_info ? rhs : lhs;
   if (column_info->index_fields) {
     BuildTSQuery(filter, ctx, *column_info, expr);

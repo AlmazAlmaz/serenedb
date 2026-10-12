@@ -21,70 +21,49 @@
 #include "connector/functions/curve.h"
 
 #include <duckdb/common/types/data_chunk.hpp>
-#include <duckdb/common/vector/flat_vector.hpp>
+#include <duckdb/execution/expression_executor_state.hpp>
 #include <duckdb/function/scalar_function.hpp>
+#include <duckdb/planner/expression/bound_function_expression.hpp>
 
 #include "connector/curve_index.h"
 
 namespace sdb::connector {
 namespace {
 
-void BoxContains(duckdb::DataChunk& args, duckdb::ExpressionState&,
-                 duckdb::Vector& result) {
-  for (const auto& arg : args.data) {
-    if (arg.GetType().id() == duckdb::LogicalTypeId::SQLNULL) {
-      result.Reference(duckdb::Value{duckdb::LogicalType::BOOLEAN},
-                       duckdb::count_t{args.size()});
-      return;
-    }
-  }
-  const auto& point_type = args.data[0].GetType();
-  ValidateCurveBounds(point_type, args.data[1].GetType(),
-                      args.data[2].GetType());
-  const auto dimensions =
-    static_cast<uint32_t>(duckdb::StructType::GetChildCount(point_type));
-  const CurveTuples points{args.data[0], point_type};
-  const CurveTuples lower{args.data[1], point_type};
-  const CurveTuples upper{args.data[2], point_type};
-  auto* matches = duckdb::FlatVector::GetDataMutable<bool>(result);
-  for (duckdb::idx_t row = 0; row < args.size(); ++row) {
-    if (!points.IsValid(row) || !lower.IsValid(row) || !upper.IsValid(row)) {
-      duckdb::FlatVector::SetNull(result, row, true);
-      continue;
-    }
-    bool match = true;
-    bool unknown = false;
-    for (uint32_t axis = 0; axis < dimensions; ++axis) {
-      const bool has_min = lower.IsValid(row, axis);
-      const bool has_max = upper.IsValid(row, axis);
-      if (!has_min && !has_max) {
-        continue;
-      }
-      if (!points.IsValid(row, axis)) {
-        unknown = true;
-        continue;
-      }
-      const auto value = points.Get(row, axis);
-      match &= (!has_min || value >= lower.Get(row, axis)) &&
-               (!has_max || value <= upper.Get(row, axis));
-    }
-    if (match && unknown) {
-      duckdb::FlatVector::SetNull(result, row, true);
-      continue;
-    }
-    matches[row] = match;
-  }
+duckdb::unique_ptr<duckdb::FunctionData> CurveBind(
+  duckdb::BindScalarFunctionInput& input) {
+  return BindCurveSpec(input.GetClientContext(), input.GetArguments());
+}
+
+void CurveFunction(duckdb::DataChunk& args, duckdb::ExpressionState& state,
+                   duckdb::Vector& result) {
+  const auto& spec = state.expr.Cast<duckdb::BoundFunctionExpression>()
+                       .BindInfo()
+                       ->Cast<CurveSpec>();
+  EncodeCurveCodes(spec, args, result);
 }
 
 }  // namespace
 
 void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
+  const irs::curve::Options defaults;
   duckdb::ScalarFunction function{
-    "sdb_box_contains",
-    {duckdb::LogicalType::ANY, duckdb::LogicalType::ANY,
-     duckdb::LogicalType::ANY},
-    duckdb::LogicalType::BOOLEAN,
-    BoxContains};
+    duckdb::Identifier{kCurveFunction}, duckdb::vector<duckdb::LogicalType>{},
+    duckdb::LogicalType::BLOB, CurveFunction, CurveBind};
+  function.GetSignature()
+    .AddArgs("coordinates", duckdb::LogicalType::ANY)
+    .AddKeywordOnly("kind", duckdb::LogicalType::VARCHAR,
+                    duckdb::Value{"morton"})
+    .AddKeywordOnly(
+      "max_level", duckdb::LogicalType::INTEGER,
+      duckdb::Value::INTEGER(static_cast<int32_t>(defaults.max_level)))
+    .AddKeywordOnly("level_step", duckdb::LogicalType::INTEGER,
+                    duckdb::Value{duckdb::LogicalType::INTEGER})
+    .AddKeywordOnly(
+      "max_cells", duckdb::LogicalType::INTEGER,
+      duckdb::Value::INTEGER(static_cast<int32_t>(defaults.max_cells)))
+    .AddKeywordOnly("lower", duckdb::LogicalType::ANY, duckdb::Value{})
+    .AddKeywordOnly("upper", duckdb::LogicalType::ANY, duckdb::Value{});
   function.SetNullHandling(duckdb::FunctionNullHandling::SPECIAL_HANDLING);
   loader.RegisterFunction(function);
 }

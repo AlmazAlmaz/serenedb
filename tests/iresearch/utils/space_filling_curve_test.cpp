@@ -221,6 +221,65 @@ TEST(SpaceFillingCurve, OrderedNumbers) {
   EXPECT_TRUE(std::isnan(DecodeDouble(EncodeDouble(NAN))));
 }
 
+TEST(SpaceFillingCurve, NormalizedKeys) {
+  EXPECT_EQ(NormalizeKey(5, 10, 20), 0);
+  EXPECT_EQ(NormalizeKey(10, 10, 20), 0);
+  EXPECT_EQ(NormalizeKey(11, 10, 20), uint64_t{1} << 60);
+  EXPECT_EQ(NormalizeKey(20, 10, 20), uint64_t{10} << 60);
+  EXPECT_EQ(NormalizeKey(99, 10, 20), uint64_t{10} << 60);
+  EXPECT_EQ(NormalizeKey(UINT64_MAX, 0, UINT64_MAX), UINT64_MAX);
+  for (uint64_t key = 0; key < 40; ++key) {
+    EXPECT_LE(NormalizeKey(key, 10, 20), NormalizeKey(key + 1, 10, 20));
+    if (key >= 10 && key < 20) {
+      EXPECT_LT(NormalizeKey(key, 10, 20), NormalizeKey(key + 1, 10, 20));
+    }
+  }
+
+  EXPECT_EQ(NormalizeDouble(-5, 0, 1), 0);
+  EXPECT_EQ(NormalizeDouble(0.5, 0, 1), uint64_t{1} << 63);
+  EXPECT_EQ(NormalizeDouble(1, 0, 1), UINT64_MAX);
+  EXPECT_EQ(NormalizeDouble(NAN, 0, 1), UINT64_MAX);
+  EXPECT_EQ(NormalizeDouble(1000.5, 1000, 1001), uint64_t{1} << 63);
+  EXPECT_LT(NormalizeDouble(1000.25, 1000, 1001),
+            NormalizeDouble(1000.75, 1000, 1001));
+  const std::array<double, 12> values{-INFINITY, -1.0, -0.0, 0.0,
+                                      1e-300,    0.25, 0.5,  0.75,
+                                      1 - 1e-16, 1.0,  2.0,  INFINITY};
+  for (size_t i = 1; i < values.size(); ++i) {
+    EXPECT_LE(NormalizeDouble(values[i - 1], 0, 1),
+              NormalizeDouble(values[i], 0, 1));
+  }
+  EXPECT_LE(NormalizeDouble(INFINITY, 0, 1), NormalizeDouble(NAN, 0, 1));
+}
+
+TEST(SpaceFillingCurve, LeafCodeIsTruncatedEncoding) {
+  std::mt19937_64 random{1137};
+  for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
+    SCOPED_TRACE(dimensions);
+    for (bool hilbert : {false, true}) {
+      for (uint32_t max_level : {0u, 1u, 7u, 33u, 64u}) {
+        SCOPED_TRACE(max_level);
+        const Options options{
+          .dimensions = dimensions, .max_level = max_level, .hilbert = hilbert};
+        Point point;
+        for (auto& value : point) {
+          value = random();
+        }
+        Code code;
+        const auto size = LeafCode(point, options, code.data());
+        ASSERT_EQ(size, CodeSize(dimensions, max_level));
+        const auto full = Encode(point, dimensions, hilbert);
+        const auto bits = dimensions * max_level;
+        for (uint32_t bit = 0; bit < size * 8; ++bit) {
+          const bool expected =
+            bit < bits && (full[bit / 8] >> (7 - bit % 8)) & 1;
+          ASSERT_EQ(bool((code[bit / 8] >> (7 - bit % 8)) & 1), expected);
+        }
+      }
+    }
+  }
+}
+
 TEST(SpaceFillingCurve, MortonReference) {
   const auto encoded =
     Encode({0x8000000000000000, 0x4000000000000000}, 2, false);

@@ -1177,11 +1177,11 @@ bool ClaimSearchConjuncts(
     if (!ranges) {
       ranges = connector::CollectCurveRanges(filters, normalize);
     }
-    const auto tuple =
+    const auto curve =
       connector::DeserializeBoundExpression(key.normalized_expression, context);
     const auto info = MakeSearchColumnInfo(key.field_id, field, key.type,
                                            dicts.Acquire(key.field_id));
-    if (connector::AddCurveRangeCandidates(*root_and, *ranges, *tuple, info,
+    if (connector::AddCurveRangeCandidates(*root_and, *ranges, *curve, info,
                                            context)) {
       any_claimed = true;
       analyzed_fields.insert(info.field_id);
@@ -1192,10 +1192,9 @@ bool ClaimSearchConjuncts(
   }
   connector::FilterScorers filter_scorers;
   for (size_t i = 0; i < filters.size();) {
-    if (connector::AddCurveCandidates(*root_and, *filters[i], getter,
-                                      expr_getter, context)) {
+    if (connector::ClaimCurveMatch(*root_and, filters, i, expr_getter,
+                                   context)) {
       any_claimed = true;
-      ++i;
       continue;
     }
     if (TryClaimIResearchConjunct(*root_and, filters[i], getter, expr_getter,

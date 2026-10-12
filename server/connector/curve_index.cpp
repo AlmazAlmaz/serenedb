@@ -20,104 +20,224 @@
 
 #include "connector/curve_index.h"
 
+#include <absl/strings/ascii.h>
+
+#include <duckdb/common/vector/constant_vector.hpp>
 #include <duckdb/common/vector/flat_vector.hpp>
 #include <duckdb/common/vector/string_vector.hpp>
-#include <duckdb/common/vector/struct_vector.hpp>
+#include <duckdb/execution/expression_executor.hpp>
+#include <duckdb/planner/expression/bound_constant_expression.hpp>
+#include <duckdb/planner/expression/bound_function_expression.hpp>
 #include <iresearch/utils/assert.hpp>
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
 
+#include "connector/pg_logical_types.h"
+
 namespace sdb::connector {
 namespace {
 
-enum class Family : uint8_t {
-  Null,
-  Signed,
-  Unsigned,
-  Float,
-  Date,
-  Timestamp,
-  TimestampTz,
-  Unsupported,
+constexpr std::string_view kMortonCurve = "morton";
+constexpr std::string_view kHilbertCurve = "hilbert";
+
+enum CurveOption : size_t {
+  kKindOption,
+  kMaxLevelOption,
+  kLevelStepOption,
+  kMaxCellsOption,
+  kLowerOption,
+  kUpperOption,
+  kOptionCount,
 };
 
-Family CoordinateFamily(duckdb::LogicalTypeId id) noexcept {
+constexpr std::string_view kCoordinateTypes =
+  "an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET";
+
+constexpr uint8_t kInetV4 = 1;
+constexpr uint8_t kInetV6 = 2;
+
+std::optional<CurveFamily> CoordinateFamily(const duckdb::LogicalType& type) {
   using enum duckdb::LogicalTypeId;
-  switch (id) {
+  if (pg::IsInet(type)) {
+    return CurveFamily::Inet;
+  }
+  switch (type.id()) {
     case SQLNULL:
-      return Family::Null;
+      return CurveFamily::Null;
     case TINYINT:
     case SMALLINT:
     case INTEGER:
     case BIGINT:
-      return Family::Signed;
+      return CurveFamily::Signed;
     case UTINYINT:
     case USMALLINT:
     case UINTEGER:
     case UBIGINT:
-      return Family::Unsigned;
+      return CurveFamily::Unsigned;
     case FLOAT:
     case DOUBLE:
-      return Family::Float;
+      return CurveFamily::Float;
     case DATE:
-      return Family::Date;
+      return CurveFamily::Date;
     case TIMESTAMP:
-      return Family::Timestamp;
+      return CurveFamily::Timestamp;
     case TIMESTAMP_TZ:
-      return Family::TimestampTz;
+      return CurveFamily::TimestampTz;
     default:
-      return Family::Unsupported;
+      return std::nullopt;
   }
 }
 
-bool IsInteger(Family family) noexcept {
-  return family == Family::Signed || family == Family::Unsigned;
-}
-
-bool BoundFits(Family bound, Family coordinate) noexcept {
-  return bound == Family::Null || coordinate == Family::Null ||
-         bound == coordinate ||
-         (coordinate == Family::Float && IsInteger(bound));
-}
-
-constexpr std::string_view kCurvePointTypes =
-  "a ROW of 2 to 8 integer, FLOAT, DOUBLE, DATE, TIMESTAMP or TIMESTAMPTZ "
-  "coordinates";
-
-bool IsCurveTuple(const duckdb::LogicalType& type) {
-  if (!duckdb::StructType::IsStruct(type)) {
-    return false;
+uint32_t IntegerWidth(duckdb::LogicalTypeId type) {
+  using enum duckdb::LogicalTypeId;
+  switch (type) {
+    case TINYINT:
+    case UTINYINT:
+      return 8;
+    case SMALLINT:
+    case USMALLINT:
+      return 16;
+    case INTEGER:
+    case UINTEGER:
+    case DATE:
+      return 32;
+    default:
+      return 64;
   }
-  const auto& children = duckdb::StructType::GetChildTypes(type);
-  return children.size() >= 2 && children.size() <= irs::curve::kMaxDimensions;
 }
 
-bool IsCurvePoint(const duckdb::LogicalType& type) {
-  if (!IsCurveTuple(type)) {
-    return false;
+uint64_t InetKey(uint8_t ip_type, duckdb::hugeint_t address) noexcept {
+  if (ip_type == kInetV6) {
+    return irs::curve::kSignBit |
+           ((static_cast<uint64_t>(address.upper) ^ irs::curve::kSignBit) >> 1);
   }
-  for (const auto& child : duckdb::StructType::GetChildTypes(type)) {
-    if (CoordinateFamily(child.second.id()) == Family::Unsupported) {
-      return false;
+  if (ip_type == kInetV4) {
+    return address.lower << 31;
+  }
+  return 0;
+}
+
+struct RawBound {
+  uint64_t key = 0;
+  double value = 0;
+  bool exact = false;
+};
+
+bool IsSignedInteger(duckdb::LogicalTypeId type) {
+  using enum duckdb::LogicalTypeId;
+  return type == TINYINT || type == SMALLINT || type == INTEGER ||
+         type == BIGINT;
+}
+
+bool IsUnsignedInteger(duckdb::LogicalTypeId type) {
+  using enum duckdb::LogicalTypeId;
+  return type == UTINYINT || type == USMALLINT || type == UINTEGER ||
+         type == UBIGINT;
+}
+
+std::optional<RawBound> ToRaw(CurveFamily family, const duckdb::Value& bound) {
+  using enum duckdb::LogicalTypeId;
+  const auto type = bound.type().id();
+  const bool is_signed = IsSignedInteger(type);
+  const bool is_unsigned = IsUnsignedInteger(type);
+  switch (family) {
+    case CurveFamily::Signed:
+      if (is_signed) {
+        return RawBound{
+          .key = irs::curve::EncodeSigned(bound.GetValue<int64_t>()),
+          .exact = true};
+      }
+      if (is_unsigned) {
+        const auto value = bound.GetValue<uint64_t>();
+        constexpr auto kMax =
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+        return RawBound{.key = irs::curve::EncodeSigned(
+                          static_cast<int64_t>(std::min(value, kMax))),
+                        .exact = value <= kMax};
+      }
+      return std::nullopt;
+    case CurveFamily::Unsigned:
+      if (is_unsigned) {
+        return RawBound{.key = bound.GetValue<uint64_t>(), .exact = true};
+      }
+      if (is_signed) {
+        const auto value = bound.GetValue<int64_t>();
+        return RawBound{
+          .key = static_cast<uint64_t>(std::max<int64_t>(value, 0)),
+          .exact = value >= 0};
+      }
+      return std::nullopt;
+    case CurveFamily::Float:
+      if (type == FLOAT || type == DOUBLE) {
+        return RawBound{.value = bound.GetValue<double>(), .exact = true};
+      }
+      if (is_signed) {
+        const auto value = bound.GetValue<int64_t>();
+        const auto converted = static_cast<double>(value);
+        return RawBound{.value = converted,
+                        .exact = converted >= -0x1p63 && converted < 0x1p63 &&
+                                 static_cast<int64_t>(converted) == value};
+      }
+      if (is_unsigned) {
+        const auto value = bound.GetValue<uint64_t>();
+        const auto converted = static_cast<double>(value);
+        return RawBound{.value = converted,
+                        .exact = converted < 0x1p64 &&
+                                 static_cast<uint64_t>(converted) == value};
+      }
+      if (type == DECIMAL) {
+        return RawBound{.value =
+                          bound.DefaultCastAs(duckdb::LogicalType::DOUBLE)
+                            .GetValue<double>()};
+      }
+      return std::nullopt;
+    case CurveFamily::Date:
+      if (type != DATE) {
+        return std::nullopt;
+      }
+      return RawBound{
+        .key = irs::curve::EncodeSigned(bound.GetValue<duckdb::date_t>().days),
+        .exact = true};
+    case CurveFamily::Timestamp:
+      if (type != TIMESTAMP) {
+        return std::nullopt;
+      }
+      return RawBound{.key = irs::curve::EncodeSigned(
+                        bound.GetValue<duckdb::timestamp_t>().value),
+                      .exact = true};
+    case CurveFamily::TimestampTz:
+      if (type != TIMESTAMP_TZ) {
+        return std::nullopt;
+      }
+      return RawBound{.key = irs::curve::EncodeSigned(
+                        bound.GetValue<duckdb::timestamp_tz_t>().value),
+                      .exact = true};
+    case CurveFamily::Inet: {
+      if (!pg::IsInet(bound.type())) {
+        return std::nullopt;
+      }
+      const auto& parts = duckdb::StructValue::GetChildren(bound);
+      if (parts[0].IsNull() || parts[1].IsNull()) {
+        return std::nullopt;
+      }
+      return RawBound{.key = InetKey(parts[0].GetValue<uint8_t>(),
+                                     parts[1].GetValue<duckdb::hugeint_t>())};
     }
+    case CurveFamily::Null:
+      return std::nullopt;
   }
-  return true;
+  return std::nullopt;
 }
 
-template<typename T>
-uint64_t EncodeNumber(T value, bool as_double) noexcept {
-  if constexpr (std::is_floating_point_v<T>) {
-    return irs::curve::EncodeDouble(value);
-  } else {
-    if (as_double) {
-      return irs::curve::EncodeDouble(static_cast<double>(value));
-    }
-    if constexpr (std::is_signed_v<T>) {
-      return irs::curve::EncodeSigned(value);
-    } else {
-      return value;
-    }
-  }
+uint64_t MapKey(const CurveAxis& axis, uint64_t key) noexcept {
+  return axis.normalized
+           ? irs::curve::NormalizeKey(key, axis.key_lo, axis.key_hi)
+           : key;
+}
+
+uint64_t MapDouble(const CurveAxis& axis, double value) noexcept {
+  return axis.normalized ? irs::curve::NormalizeDouble(value, axis.lo, axis.hi)
+                         : irs::curve::EncodeDouble(value);
 }
 
 template<typename T>
@@ -125,170 +245,322 @@ T Load(const duckdb::UnifiedVectorFormat& format, duckdb::idx_t index) {
   return duckdb::UnifiedVectorFormat::GetDataUnsafe<T>(format)[index];
 }
 
-}  // namespace
-
-void ValidateCurveType(std::string_view label,
-                       const duckdb::LogicalType& type) {
-  if (!IsCurvePoint(type)) {
-    THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
-                    ERR_MSG("Column '", label, "': curve opclass requires ",
-                            kCurvePointTypes, ", got ", type.ToString()));
+bool IsValid(const CurveAxis& axis,
+             const duckdb::RecursiveUnifiedVectorFormat& format,
+             duckdb::idx_t row) {
+  const auto& unified = format.unified;
+  if (!unified.validity.RowIsValid(unified.sel->get_index(row))) {
+    return false;
   }
-}
-
-bool CurveBoundFits(const duckdb::LogicalType& coordinate,
-                    const duckdb::LogicalType& bound) noexcept {
-  return BoundFits(CoordinateFamily(bound.id()),
-                   CoordinateFamily(coordinate.id()));
-}
-
-void ValidateCurveBounds(const duckdb::LogicalType& point,
-                         const duckdb::LogicalType& lower,
-                         const duckdb::LogicalType& upper) {
-  if (!IsCurvePoint(point)) {
-    THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
-                    ERR_MSG("sdb_box_contains: the point must be ",
-                            kCurvePointTypes, ", got ", point.ToString()));
+  if (axis.family != CurveFamily::Inet) {
+    return true;
   }
-  const auto& coordinates = duckdb::StructType::GetChildTypes(point);
-  for (const auto* bound : {&lower, &upper}) {
-    if (!IsCurveTuple(*bound) ||
-        duckdb::StructType::GetChildCount(*bound) != coordinates.size()) {
-      THROW_SQL_ERROR(
-        ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
-        ERR_MSG("sdb_box_contains: bounds must be ROWs with ",
-                coordinates.size(), " coordinates like the point ",
-                point.ToString(), ", got ", bound->ToString()));
-    }
-    const auto& limits = duckdb::StructType::GetChildTypes(*bound);
-    for (size_t axis = 0; axis < coordinates.size(); ++axis) {
-      const auto& coordinate = coordinates[axis].second;
-      const auto& limit = limits[axis].second;
-      if (!CurveBoundFits(coordinate, limit)) {
-        THROW_SQL_ERROR(
-          ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
-          ERR_MSG("sdb_box_contains: bound ", limit.ToString(),
-                  " does not match coordinate ", axis + 1, " of type ",
-                  coordinate.ToString(), "; cast the bound explicitly"));
-      }
+  for (const auto& child : {&format.children[0], &format.children[1]}) {
+    const auto& part = child->unified;
+    if (!part.validity.RowIsValid(part.sel->get_index(row))) {
+      return false;
     }
   }
+  return true;
 }
 
-CurveTuples::CurveTuples(const duckdb::Vector& tuples,
-                         const duckdb::LogicalType& point) {
-  tuples.ToUnifiedFormat(_tuples);
-  if (!duckdb::StructType::IsStruct(tuples.GetType())) {
-    return;
-  }
-  const auto& entries = duckdb::StructVector::GetEntries(tuples);
-  const auto& coordinates = duckdb::StructType::GetChildTypes(point);
-  SDB_ASSERT(entries.size() == coordinates.size());
-  for (size_t axis = 0; axis < entries.size(); ++axis) {
-    auto& target = _axes[axis];
-    entries[axis].ToUnifiedFormat(target.format);
-    target.type = entries[axis].GetType().id();
-    target.as_double =
-      CoordinateFamily(coordinates[axis].second.id()) == Family::Float &&
-      IsInteger(CoordinateFamily(target.type));
-  }
-}
-
-uint64_t CurveTuples::Get(duckdb::idx_t row, uint32_t axis) const {
+uint64_t AxisKey(const CurveAxis& axis,
+                 const duckdb::RecursiveUnifiedVectorFormat& format,
+                 duckdb::idx_t row) {
   using enum duckdb::LogicalTypeId;
-  const auto& target = _axes[axis];
-  const auto& format = target.format;
-  const auto index = format.sel->get_index(row);
-  switch (target.type) {
+  const auto& unified = format.unified;
+  const auto index = unified.sel->get_index(row);
+  const auto signed_key = [&](int64_t value) {
+    return MapKey(axis, irs::curve::EncodeSigned(value));
+  };
+  if (axis.family == CurveFamily::Inet) {
+    const auto& type = format.children[0].unified;
+    const auto& address = format.children[1].unified;
+    return MapKey(axis, InetKey(Load<uint8_t>(type, type.sel->get_index(row)),
+                                Load<duckdb::hugeint_t>(
+                                  address, address.sel->get_index(row))));
+  }
+  switch (axis.type.id()) {
     case TINYINT:
-      return EncodeNumber(Load<int8_t>(format, index), target.as_double);
+      return signed_key(Load<int8_t>(unified, index));
     case SMALLINT:
-      return EncodeNumber(Load<int16_t>(format, index), target.as_double);
+      return signed_key(Load<int16_t>(unified, index));
     case INTEGER:
     case DATE:
-      return EncodeNumber(Load<int32_t>(format, index), target.as_double);
+      return signed_key(Load<int32_t>(unified, index));
     case BIGINT:
     case TIMESTAMP:
     case TIMESTAMP_TZ:
-      return EncodeNumber(Load<int64_t>(format, index), target.as_double);
+      return signed_key(Load<int64_t>(unified, index));
     case UTINYINT:
-      return EncodeNumber(Load<uint8_t>(format, index), target.as_double);
+      return MapKey(axis, Load<uint8_t>(unified, index));
     case USMALLINT:
-      return EncodeNumber(Load<uint16_t>(format, index), target.as_double);
+      return MapKey(axis, Load<uint16_t>(unified, index));
     case UINTEGER:
-      return EncodeNumber(Load<uint32_t>(format, index), target.as_double);
+      return MapKey(axis, Load<uint32_t>(unified, index));
     case UBIGINT:
-      return EncodeNumber(Load<uint64_t>(format, index), target.as_double);
+      return MapKey(axis, Load<uint64_t>(unified, index));
     case FLOAT:
-      return EncodeNumber(Load<float>(format, index), false);
+      return MapDouble(axis, Load<float>(unified, index));
     case DOUBLE:
-      return EncodeNumber(Load<double>(format, index), false);
+      return MapDouble(axis, Load<double>(unified, index));
     default:
       SDB_ASSERT(false);
       return 0;
   }
 }
 
-irs::curve::Box CurveBox(const CurveTuples& lower, duckdb::idx_t lower_row,
-                         const CurveTuples& upper, duckdb::idx_t upper_row,
-                         uint32_t dimensions) {
-  irs::curve::Box box;
-  for (uint32_t axis = 0; axis < dimensions; ++axis) {
-    box.min[axis] =
-      lower.IsValid(lower_row, axis) ? lower.Get(lower_row, axis) : 0;
-    box.max[axis] = upper.IsValid(upper_row, axis)
-                      ? upper.Get(upper_row, axis)
-                      : std::numeric_limits<uint64_t>::max();
+duckdb::Value OptionValue(duckdb::ClientContext& context,
+                          duckdb::unique_ptr<duckdb::Expression>& argument,
+                          std::string_view name) {
+  if (!argument->IsFoldable() || argument->HasParameter()) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+      ERR_MSG("curve(): option \"", name, "\" must be a constant"));
   }
-  return box;
+  auto value = duckdb::ExpressionExecutor::EvaluateScalar(context, *argument);
+  auto alias = argument->GetAlias();
+  argument = duckdb::make_uniq<duckdb::BoundConstantExpression>(value);
+  argument->SetAlias(std::move(alias));
+  return value;
 }
 
-irs::curve::Box CurveBox(const duckdb::LogicalType& point,
-                         const duckdb::Value& lower,
-                         const duckdb::Value& upper) {
-  const duckdb::Vector lower_vector{lower, duckdb::count_t{1}};
-  const duckdb::Vector upper_vector{upper, duckdb::count_t{1}};
-  return CurveBox(
-    CurveTuples{lower_vector, point}, 0, CurveTuples{upper_vector, point}, 0,
-    static_cast<uint32_t>(duckdb::StructType::GetChildCount(point)));
+uint32_t LimitOption(const duckdb::Value& value, std::string_view name,
+                     uint32_t min, uint32_t max) {
+  if (!value.IsNull()) {
+    const auto n = value.GetValue<int64_t>();
+    if (n >= min && n <= max) {
+      return static_cast<uint32_t>(n);
+    }
+  }
+  THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                  ERR_MSG("curve(): option \"", name, "\" must be between ",
+                          min, " and ", max, ", got ", value.ToString()));
 }
 
-void PackCurvePoints(const duckdb::Vector& points, duckdb::idx_t count,
-                     uint32_t dimensions, duckdb::Vector& packed) {
-  const CurveTuples tuples{points, points.GetType()};
-  auto* out = duckdb::FlatVector::GetDataMutable<duckdb::string_t>(packed);
-  std::array<char, sizeof(irs::curve::Point)> bytes;
+const duckdb::Value* BoundComponent(const duckdb::Value& bounds,
+                                    std::string_view name, uint32_t axis,
+                                    uint32_t dimensions) {
+  if (bounds.IsNull()) {
+    return nullptr;
+  }
+  if (!duckdb::StructType::IsStruct(bounds.type()) ||
+      pg::IsInet(bounds.type()) ||
+      duckdb::StructType::GetChildCount(bounds.type()) != dimensions) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+      ERR_MSG("curve(): option \"", name, "\" must be a ROW of ", dimensions,
+              " values, got ", bounds.type().ToString()));
+  }
+  const auto& component = duckdb::StructValue::GetChildren(bounds)[axis];
+  return component.IsNull() ? nullptr : &component;
+}
+
+[[noreturn]] void ThrowBoundMismatch(std::string_view what,
+                                     const duckdb::Value& bound, uint32_t axis,
+                                     const CurveAxis& target) {
+  THROW_SQL_ERROR(
+    ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+    ERR_MSG("curve(): ", what, " ", bound.type().ToString(),
+            " does not match coordinate ", axis + 1, " of type ",
+            target.type.ToString(), "; cast the bound explicitly"));
+}
+
+void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
+               const duckdb::Value* upper) {
+  if (!lower && !upper) {
+    return;
+  }
+  if (!lower || !upper) {
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+      ERR_MSG("curve(): \"lower\" and \"upper\" must both bound coordinate ",
+              index + 1, " or both leave it NULL"));
+  }
+  const auto lo = ToRaw(axis.family, *lower);
+  if (!lo) {
+    ThrowBoundMismatch("lower bound", *lower, index, axis);
+  }
+  const auto hi = ToRaw(axis.family, *upper);
+  if (!hi) {
+    ThrowBoundMismatch("upper bound", *upper, index, axis);
+  }
+  const bool ordered =
+    axis.family == CurveFamily::Float
+      ? std::isfinite(lo->value) && std::isfinite(hi->value) &&
+          lo->value < hi->value && std::isfinite(hi->value - lo->value)
+      : lo->key < hi->key;
+  if (!ordered) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                    ERR_MSG("curve(): coordinate ", index + 1,
+                            " needs finite bounds with lower < upper, got ",
+                            lower->ToString(), " and ", upper->ToString()));
+  }
+  axis.normalized = true;
+  axis.key_lo = lo->key;
+  axis.key_hi = hi->key;
+  axis.lo = lo->value;
+  axis.hi = hi->value;
+}
+
+}  // namespace
+
+std::optional<CurveKey> CurveAxis::BoundKey(const duckdb::Value& bound) const {
+  const auto raw = ToRaw(family, bound);
+  if (!raw) {
+    return std::nullopt;
+  }
+  return CurveKey{.key = family == CurveFamily::Float
+                           ? MapDouble(*this, raw->value)
+                           : MapKey(*this, raw->key),
+                  .exact = raw->exact && Injective()};
+}
+
+std::pair<uint64_t, uint64_t> CurveAxis::Limits() const noexcept {
+  constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+  if (normalized) {
+    return {0, kMax};
+  }
+  switch (family) {
+    case CurveFamily::Float:
+      return {
+        irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
+        irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN())};
+    case CurveFamily::Signed:
+    case CurveFamily::Date: {
+      const auto width = IntegerWidth(type.id());
+      if (width == 64) {
+        return {0, kMax};
+      }
+      const auto half = uint64_t{1} << (width - 1);
+      return {irs::curve::kSignBit - half, irs::curve::kSignBit + half - 1};
+    }
+    case CurveFamily::Unsigned: {
+      const auto width = IntegerWidth(type.id());
+      return {0, width == 64 ? kMax : (uint64_t{1} << width) - 1};
+    }
+    default:
+      return {0, kMax};
+  }
+}
+
+duckdb::unique_ptr<duckdb::FunctionData> CurveSpec::Copy() const {
+  return duckdb::make_uniq<CurveSpec>(*this);
+}
+
+bool CurveSpec::Equals(const duckdb::FunctionData& other) const {
+  const auto& spec = other.Cast<CurveSpec>();
+  return options == spec.options && axes == spec.axes;
+}
+
+duckdb::unique_ptr<CurveSpec> BindCurveSpec(
+  duckdb::ClientContext& context,
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& args) {
+  SDB_ASSERT(args.size() >= kOptionCount);
+  const auto dimensions = args.size() - kOptionCount;
+  if (dimensions < 2 || dimensions > irs::curve::kMaxDimensions) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                    ERR_MSG("curve(): takes 2 to ", irs::curve::kMaxDimensions,
+                            " coordinates, got ", dimensions));
+  }
+  auto spec = duckdb::make_uniq<CurveSpec>();
+  auto& options = spec->options;
+  options.dimensions = static_cast<uint32_t>(dimensions);
+  for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
+    const auto& type = args[axis]->GetReturnType();
+    const auto family = CoordinateFamily(type);
+    if (!family) {
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+                      ERR_MSG("curve(): coordinate ", axis + 1, " must be ",
+                              kCoordinateTypes, ", got ", type.ToString()));
+    }
+    spec->axes[axis].type = type;
+    spec->axes[axis].family = *family;
+  }
+  const auto option = [&](CurveOption index, std::string_view name) {
+    return OptionValue(context, args[dimensions + index], name);
+  };
+
+  const auto kind = option(kKindOption, "kind");
+  const auto curve = kind.IsNull()
+                       ? std::string{kMortonCurve}
+                       : absl::AsciiStrToLower(duckdb::StringValue::Get(kind));
+  if (curve != kMortonCurve && curve != kHilbertCurve) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                    ERR_MSG("curve(): option \"kind\" must be '", kMortonCurve,
+                            "' or '", kHilbertCurve, "', got '", curve, "'"));
+  }
+  options.hilbert = curve == kHilbertCurve;
+  options.max_level = LimitOption(option(kMaxLevelOption, "max_level"),
+                                  "max_level", 0, irs::curve::kMaxLevel);
+  const auto step = option(kLevelStepOption, "level_step");
+  options.level_step =
+    step.IsNull() ? irs::curve::DefaultLevelStep(options.dimensions)
+                  : LimitOption(step, "level_step", 1,
+                                irs::curve::MaxLevelStep(options.dimensions));
+  options.max_cells = LimitOption(option(kMaxCellsOption, "max_cells"),
+                                  "max_cells", 1, irs::curve::kMaxCells);
+
+  const auto lower = option(kLowerOption, "lower");
+  const auto upper = option(kUpperOption, "upper");
+  for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
+    Normalize(spec->axes[axis], axis,
+              BoundComponent(lower, "lower", axis, options.dimensions),
+              BoundComponent(upper, "upper", axis, options.dimensions));
+  }
+  return spec;
+}
+
+const CurveSpec* TryGetCurveSpec(const duckdb::Expression& expression) {
+  if (expression.GetExpressionClass() !=
+      duckdb::ExpressionClass::BOUND_FUNCTION) {
+    return nullptr;
+  }
+  const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
+  if (function.Function().GetName().GetIdentifierName() != kCurveFunction) {
+    return nullptr;
+  }
+  return dynamic_cast<const CurveSpec*>(function.BindInfo().get());
+}
+
+void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
+                      duckdb::Vector& result) {
+  const auto count = args.size();
+  const auto dimensions = spec.options.dimensions;
+  std::array<duckdb::RecursiveUnifiedVectorFormat, irs::curve::kMaxDimensions>
+    formats;
+  for (uint32_t axis = 0; axis < dimensions; ++axis) {
+    if (spec.axes[axis].family == CurveFamily::Null) {
+      result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
+      duckdb::ConstantVector::SetNull(result, true);
+      return;
+    }
+    duckdb::Vector::RecursiveToUnifiedFormat(args.data[axis], formats[axis]);
+  }
+  result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
+  auto* out = duckdb::FlatVector::GetDataMutable<duckdb::string_t>(result);
+  irs::curve::Point point;
+  point.fill(0);
+  irs::curve::Code code;
   for (duckdb::idx_t row = 0; row < count; ++row) {
-    if (!tuples.IsValid(row)) {
-      duckdb::FlatVector::SetNull(packed, row, true);
+    bool valid = true;
+    for (uint32_t axis = 0; axis < dimensions && valid; ++axis) {
+      valid = IsValid(spec.axes[axis], formats[axis], row);
+    }
+    if (!valid) {
+      duckdb::FlatVector::SetNull(result, row, true);
       continue;
     }
     for (uint32_t axis = 0; axis < dimensions; ++axis) {
-      const auto value =
-        tuples.IsValid(row, axis) ? tuples.Get(row, axis) : uint64_t{0};
-      for (uint32_t byte = 0; byte < sizeof(uint64_t); ++byte) {
-        bytes[axis * sizeof(uint64_t) + byte] =
-          static_cast<char>(value >> (56 - byte * 8));
-      }
+      point[axis] = AxisKey(spec.axes[axis], formats[axis], row);
     }
+    const auto size = irs::curve::LeafCode(point, spec.options, code.data());
     out[row] = duckdb::StringVector::AddStringOrBlob(
-      packed, bytes.data(), dimensions * sizeof(uint64_t));
+      result, reinterpret_cast<const char*>(code.data()), size);
   }
-}
-
-irs::curve::Point CurveTokenizer::UnpackPoint(
-  std::string_view bytes) const noexcept {
-  SDB_ASSERT(bytes.size() == _options.dimensions * sizeof(uint64_t));
-  irs::curve::Point point;
-  point.fill(0);
-  for (uint32_t axis = 0; axis < _options.dimensions; ++axis) {
-    for (uint32_t byte = 0; byte < sizeof(uint64_t); ++byte) {
-      point[axis] =
-        (point[axis] << 8) |
-        static_cast<unsigned char>(bytes[axis * sizeof(uint64_t) + byte]);
-    }
+  if (args.AllConstant()) {
+    result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
   }
-  return point;
 }
 
 }  // namespace sdb::connector
