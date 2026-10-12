@@ -317,7 +317,8 @@ TEST(SpaceFillingCurve, HilbertLocalityAndPrefixes) {
     std::vector<std::pair<Code, Point>> points;
     const uint32_t count = 1u << (dimensions * 2);
     for (uint32_t id = 0; id < count; ++id) {
-      Point point{};
+      Point point;
+      point.fill(0);
       for (uint32_t axis = 0; axis < dimensions; ++axis) {
         point[axis] = uint64_t{(id >> (axis * 2)) & 3} << 62;
       }
@@ -358,7 +359,8 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
                                 .level_step = step};
           for (uint32_t trial = 0; trial < 8; ++trial) {
             Box box;
-            Point inside{};
+            Point inside;
+            inside.fill(0);
             for (uint32_t axis = 0; axis < dimensions; ++axis) {
               const auto a = random();
               const auto b = random();
@@ -465,6 +467,67 @@ TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   ASSERT_EQ(last.size(), 1);
   EXPECT_EQ(last.front().level, 64);
   EXPECT_EQ(last.front().Max(0), UINT64_MAX);
+}
+
+TEST(SpaceFillingCurve, EncodedCellPrefixContainsAllCorners) {
+  std::mt19937_64 random{1317813};
+  uint64_t corners = 0;
+  for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t level : {0u, 1u, 7u, 24u, 32u, 63u, 64u}) {
+        for (uint32_t trial = 0; trial < 32; ++trial) {
+          Cell cell;
+          cell.level = level;
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            cell.min[axis] = level == 0 ? 0
+                             : level == 64
+                               ? random()
+                               : (random() >> (64 - level)) << (64 - level);
+          }
+          const auto expected = Term(Encode(cell.min, dimensions, hilbert),
+                                     dimensions, level, kLeafTerm);
+          for (uint32_t corner = 0; corner < (1u << dimensions); ++corner) {
+            auto point = cell.min;
+            for (uint32_t axis = 0; axis < dimensions; ++axis) {
+              if (corner & (1u << axis)) {
+                point[axis] = cell.Max(axis);
+              }
+            }
+            ASSERT_EQ(Term(Encode(point, dimensions, hilbert), dimensions,
+                           level, kLeafTerm),
+                      expected);
+            ++corners;
+          }
+        }
+      }
+    }
+  }
+  RecordProperty("corners", corners);
+}
+
+TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
+  std::mt19937_64 random{131721};
+  uint64_t comparisons = 0;
+  for (const auto [lo, hi] :
+       {std::pair{-1e308, 0.0}, std::pair{0.0, 1e308},
+        std::pair{-1e-300, 1e-300}, std::pair{0.0, 0x1p-1074},
+        std::pair{1000.0, 1000.0000000001}, std::pair{-0.0, 1.0}}) {
+    std::vector<double> values{-INFINITY, lo,      std::nextafter(lo, hi),
+                               0.0,       -0.0,    std::nextafter(hi, lo),
+                               hi,        INFINITY};
+    for (uint32_t i = 0; i < 4096; ++i) {
+      const auto fraction = static_cast<double>(random() >> 11) * 0x1p-53;
+      values.push_back(lo + fraction * (hi - lo));
+    }
+    std::ranges::sort(values);
+    for (size_t i = 1; i < values.size(); ++i) {
+      ASSERT_LE(NormalizeDouble(values[i - 1], lo, hi),
+                NormalizeDouble(values[i], lo, hi));
+      ++comparisons;
+    }
+    ASSERT_EQ(NormalizeDouble(NAN, lo, hi), UINT64_MAX);
+  }
+  RecordProperty("comparisons", comparisons);
 }
 
 }  // namespace

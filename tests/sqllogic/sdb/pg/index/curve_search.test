@@ -197,8 +197,8 @@ statement error
 SELECT count(*) FROM curve_morton WHERE curve(x, y, t) @@ ts_between(
  ROW(0, 0, NULL), ROW(5, 5, NULL), true, true);
 ----
-db error: ERROR: @@ requires an inverted-indexed column on one side
-HINT: Use: <indexed_col> @@ <tsquery_expr>, or query through the index relation (FROM <index_name>). CREATE INDEX ... USING inverted(<col>) if none exists.
+db error: ERROR: curve() @@ needs an index on the same curve() call
+HINT: Query the index relation and repeat the indexed call with the same coordinates and options.
 
 
 statement error

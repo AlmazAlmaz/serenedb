@@ -181,9 +181,16 @@ const duckdb::Value* Component(const duckdb::Value& bounds, uint32_t axis,
   return component.IsNull() ? nullptr : &component;
 }
 
-CurveKey QueryKey(const CurveAxis& axis, const duckdb::Value& bound,
-                  uint32_t index) {
-  const auto key = CurveBoundKey(axis, bound);
+CurveKey QueryKey(duckdb::ClientContext& context, const CurveAxis& axis,
+                  const duckdb::Value& bound, uint32_t index) {
+  auto key = CurveBoundKey(axis, bound);
+  if (key && axis.type.id() == duckdb::LogicalTypeId::FLOAT) {
+    const auto common = duckdb::BoundComparisonExpression::BindComparison(
+      context, axis.type, bound.type(), duckdb::ExpressionType::COMPARE_EQUAL);
+    if (common.id() == duckdb::LogicalTypeId::FLOAT) {
+      key = CurveBoundKey(axis, bound.DefaultCastAs(common));
+    }
+  }
   if (!key) {
     THROW_SQL_ERROR(
       ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
@@ -318,7 +325,11 @@ bool ClaimCurveMatch(
   const auto info = expressions(curve);
   if (!info || !info->tokenizer.analyzer ||
       info->tokenizer.analyzer->type() != irs::Type<CurveTokenizer>::id()) {
-    return false;
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+      ERR_MSG("curve() @@ needs an index on the same curve() call"),
+      ERR_HINT("Query the index relation and repeat the indexed call with the "
+               "same coordinates and options."));
   }
   const auto* query = &PeelCasts(*match.GetChildren()[1]);
   duckdb::unique_ptr<duckdb::Expression> parsed;
@@ -371,9 +382,11 @@ bool ClaimCurveMatch(
       empty = true;
     }
     if (lo) {
-      if (!empty) {
-        RaiseMin(box.min[axis], QueryKey(target, *lo, axis), include_lower,
-                 empty);
+      if (target.family != CurveFamily::Null) {
+        const auto bound = QueryKey(context, target, *lo, axis);
+        if (!empty) {
+          RaiseMin(box.min[axis], bound, include_lower, empty);
+        }
       }
       rechecks.push_back(Compare(
         context,
@@ -382,9 +395,11 @@ bool ClaimCurveMatch(
         coordinate, *lo));
     }
     if (hi) {
-      if (!empty) {
-        LowerMax(box.max[axis], QueryKey(target, *hi, axis), include_upper,
-                 empty);
+      if (target.family != CurveFamily::Null) {
+        const auto bound = QueryKey(context, target, *hi, axis);
+        if (!empty) {
+          LowerMax(box.max[axis], bound, include_upper, empty);
+        }
       }
       rechecks.push_back(Compare(
         context,
