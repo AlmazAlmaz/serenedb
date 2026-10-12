@@ -1669,8 +1669,6 @@ class TermIteratorBase {
 
       if (!_terms_in) {
         // implementation returned wrong pointer
-        SDB_ERROR(IRESEARCH, "Failed to reopen terms input");
-
         throw IoError("failed to reopen terms input");
       }
     }

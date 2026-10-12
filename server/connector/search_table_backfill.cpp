@@ -250,12 +250,6 @@ struct FeedSliceTask final : duckdb::BaseExecutorTask {
   size_t next = 0;
 };
 
-enum class SwapResult {
-  Swapped,
-  Failed,
-  Truncated,
-};
-
 // Rewrites one group of stale segments into fresh ones and swaps them in.
 // False once a truncate the snapshot misses stops the build.
 bool RebuildGroup(duckdb::ClientContext& context,
@@ -321,33 +315,30 @@ bool RebuildGroup(duckdb::ClientContext& context,
   SDB_WAIT_ON_FAILURE("pause_search_backfill_before_swap");
 
   bool truncated = false;
-  const bool replaced_ok = shard.ReplaceSegments(
-    replaced, adopted, [&](irs::IndexWriter::QueryContext::FilterPtr& removal) {
-      auto [rowids, truncate_tick] = shard.DrainDeleteLog();
-      if (truncate_tick > snapshot_tick) {
-        truncated = true;
-        return false;
-      }
-      removal = MakeRemoval(std::move(rowids));
-      return true;
-    });
-  const auto swapped = truncated     ? SwapResult::Truncated
-                       : replaced_ok ? SwapResult::Swapped
-                                     : SwapResult::Failed;
-  // Need explicit call here so on Publish we don't have pending transactions.
-  abort_all();
-  if (swapped == SwapResult::Truncated) {
-    Publish(shard);
-    return false;
-  }
-  if (swapped == SwapResult::Failed) {
-    // A source going missing is tolerated (it means everything in it was
-    // deleted), so what is left here is a codec or meta-file failure.
+  try {
+    shard.ReplaceSegments(
+      replaced, adopted,
+      [&](irs::IndexWriter::QueryContext::FilterPtr& removal) {
+        auto [rowids, truncate_tick] = shard.DrainDeleteLog();
+        if (truncate_tick > snapshot_tick) {
+          truncated = true;
+          return false;
+        }
+        removal = MakeRemoval(std::move(rowids));
+        return true;
+      });
+  } catch (const std::exception& e) {
     THROW_SQL_ERROR(
       ERR_CODE(ERRCODE_INTERNAL_ERROR),
       ERR_MSG("search-table build: failed to swap in the rebuilt segments on "
               "table ",
-              target.table_id));
+              target.table_id, ": ", e.what()));
+  }
+  // Need explicit call here so on Publish we don't have pending transactions.
+  abort_all();
+  if (truncated) {
+    Publish(shard);
+    return false;
   }
   SDB_PARK_ONCE_ON_FAILURE("pause_search_backfill_before_publish");
   Publish(shard);

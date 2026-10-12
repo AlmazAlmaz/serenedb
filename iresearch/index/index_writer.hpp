@@ -409,7 +409,7 @@ class IndexWriter : private util::Noncopyable {
                     const MergeWriter::FlushProgress& progress,
                     const AnnBuildEnv* env) -> yaclib::Future<CompactionResult>;
 
-  bool AdoptSegment(std::string_view meta_file, uint64_t tick);
+  void AdoptSegment(std::string_view meta_file, uint64_t tick);
 
   class [[nodiscard]] CompactionFloorGuard : private util::Noncopyable {
    public:
@@ -442,7 +442,7 @@ class IndexWriter : private util::Noncopyable {
 
   uint64_t CurrentSegmentId() const noexcept;
 
-  bool ReplaceSegments(
+  void ReplaceSegments(
     std::span<const std::string_view> replaced,
     std::span<const std::string_view> adopted_metas,
     absl::FunctionRef<bool(QueryContext::FilterPtr&)> removal_provider);

@@ -242,11 +242,12 @@ void RunSearchTableRecovery() {
         const uint64_t tick = first_tick + pending.queries_before;
         // A durable record claims these documents: failing to reopen them is
         // data loss, not something to skip.
-        const bool adopted = info.search->AdoptSegment(pending.meta_file, tick);
-        SDB_FATAL_IF(SEARCH, !adopted,
-                     "search-table WAL recovery: failed to adopt segment '",
-                     pending.meta_file, "' for table ", table_id,
-                     " tick=", tick);
+        try {
+          info.search->AdoptSegment(pending.meta_file, tick);
+        } catch (const std::exception& e) {
+          SDB_FATAL(SEARCH, "search-table WAL recovery: table ", table_id,
+                    " tick=", tick, ": ", e.what());
+        }
       }
 
       // A failed commit during replay leaves the index inconsistent with the

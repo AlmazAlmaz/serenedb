@@ -793,18 +793,18 @@ bool ByteSize(uint64_t& result, int fd) noexcept {
   return true;
 }
 
+static bool StatSaysMissing() noexcept {
+  const auto error = GET_ERROR();
+  return error == ENOENT || error == ENOTDIR;
+}
+
 bool Exists(bool& result, const path_char_t* file) noexcept {
   SDB_ASSERT(file != nullptr);
   FILE_STAT_T info;
 
   result = 0 == PathStats(info, file);
 
-  if (!result && ENOENT != GET_ERROR()) {
-    SDB_ERROR(IRESEARCH, "Failed to get stat, error ", GET_ERROR(),
-              " path: ", ToStr(file));
-  }
-
-  return true;
+  return result || StatSaysMissing();
 }
 
 bool ExistsDirectory(bool& result, const path_char_t* name) noexcept {
@@ -813,17 +813,14 @@ bool ExistsDirectory(bool& result, const path_char_t* name) noexcept {
 
   result = 0 == PathStats(info, name);
 
-  if (result) {
-#ifdef _WIN32
-    result = (info.st_mode & _S_IFDIR) > 0;
-#else
-    result = (info.st_mode & S_IFDIR) > 0;
-#endif
-  } else if (ENOENT != GET_ERROR()) {
-    SDB_ERROR(IRESEARCH, "Failed to get stat, error ", GET_ERROR(),
-              " path: ", ToStr(name));
+  if (!result) {
+    return StatSaysMissing();
   }
-
+#ifdef _WIN32
+  result = (info.st_mode & _S_IFDIR) > 0;
+#else
+  result = (info.st_mode & S_IFDIR) > 0;
+#endif
   return true;
 }
 
@@ -833,17 +830,14 @@ bool ExistsFile(bool& result, const path_char_t* name) noexcept {
 
   result = 0 == PathStats(info, name);
 
-  if (result) {
-#ifdef _WIN32
-    result = (info.st_mode & _S_IFREG) > 0;
-#else
-    result = (info.st_mode & S_IFREG) > 0;
-#endif
-  } else if (ENOENT != GET_ERROR()) {
-    SDB_ERROR(IRESEARCH, "Failed to get stat, error ", GET_ERROR(),
-              " path: ", ToStr(name));
+  if (!result) {
+    return StatSaysMissing();
   }
-
+#ifdef _WIN32
+  result = (info.st_mode & _S_IFREG) > 0;
+#else
+  result = (info.st_mode & S_IFREG) > 0;
+#endif
   return true;
 }
 

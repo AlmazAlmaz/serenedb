@@ -28,6 +28,7 @@
 #include <fast_float/fast_float.h>
 
 #include <cstdint>
+#include <duckdb/common/error_data.hpp>
 #include <ranges>
 #include <shared_mutex>
 #include <type_traits>
@@ -560,9 +561,10 @@ AddIncomingResult AddIncoming(
         if (!MapRemovals(mappings, *incoming.compaction_ctx.merger,
                          docs_mask)) {
           // Compacted segment has docs missing from 'segments'
-          SDB_WARN(IRESEARCH, "Failed to finish merge for segment '", meta.name,
-                   "', due to removed documents still present "
-                   "the compaction candidates");
+          SDB_DEBUG(IRESEARCH, "Failed to finish merge for segment '",
+                    meta.name,
+                    "', due to removed documents still present "
+                    "the compaction candidates");
 
           continue;  // Skip this particular compaction
         }
@@ -906,9 +908,6 @@ void IndexWriter::Transaction::UpdateSegment(bool disable_flush,
     try {
       segment.Flush();
     } catch (...) {
-      SDB_ERROR(IRESEARCH, "while flushing segment '",
-                segment.writer_meta.meta.name,
-                "', error: failed to flush segment");
       // TODO(mbkkt) What the goal are we want to achieve
       //  with keeping already flushed data?
       segment.Reset(true);
@@ -1652,31 +1651,30 @@ CompactionResult IndexWriter::Compact(
                                /*env=*/nullptr));
 }
 
-bool IndexWriter::AdoptSegment(std::string_view meta_file, uint64_t tick) {
+void IndexWriter::AdoptSegment(std::string_view meta_file, uint64_t tick) {
   IndexSegment segment;
   segment.filename = meta_file;
   try {
     segment_meta::Read(_dir, segment.meta, meta_file);
   } catch (const std::exception& e) {
-    SDB_WARN(IRESEARCH, "Cannot adopt segment meta '", meta_file,
-             "': ", e.what());
-    return false;
+    throw IoError{absl::StrCat("cannot adopt segment meta '", meta_file,
+                               "': ", duckdb::ErrorData{e}.RawMessage())};
   }
   if (segment.meta.live_docs_count == 0) {
-    return true;  // Nothing to adopt
+    return;  // Nothing to adopt
   }
 
   auto meta_ref = directory_utils::Reference(_dir, segment.filename);
   if (!meta_ref) {
-    SDB_WARN(IRESEARCH, "Cannot adopt segment meta '", segment.filename,
-             "': failed to reference it");
-    return false;
+    throw IoError{absl::StrCat("cannot adopt segment meta '", segment.filename,
+                               "': failed to reference it")};
   }
 
   auto adopted_reader =
     SegmentReaderImpl::Open(_dir, segment.meta, GetSnapshotImpl()->Options());
   if (!adopted_reader) {
-    return false;
+    throw IoError{absl::StrCat("cannot adopt segment meta '", segment.filename,
+                               "': failed to open it")};
   }
 
   [[maybe_unused]] uint64_t id = 0;
@@ -1694,8 +1692,6 @@ bool IndexWriter::AdoptSegment(std::string_view meta_file, uint64_t tick) {
 
   flush->incoming.emplace_back(std::move(segment), tick, std::move(refs),
                                std::move(adopted_reader));
-
-  return true;
 }
 
 void IndexWriter::CompactionFloorGuard::Release() noexcept {
@@ -1723,12 +1719,12 @@ IndexWriter::CompactionFloorGuard IndexWriter::ArmCompactionFloor() {
   return {*this, floor};
 }
 
-bool IndexWriter::ReplaceSegments(
+void IndexWriter::ReplaceSegments(
   std::span<const std::string_view> replaced,
   std::span<const std::string_view> adopted_metas,
   absl::FunctionRef<bool(QueryContext::FilterPtr&)> removal_provider) {
   if (replaced.empty() && adopted_metas.empty()) {
-    return true;
+    return;
   }
 
   // Open every replacement before touching the flush context, so a failure
@@ -1746,25 +1742,25 @@ bool IndexWriter::ReplaceSegments(
     try {
       segment_meta::Read(_dir, entry.segment.meta, meta_file);
     } catch (const std::exception& e) {
-      SDB_WARN(IRESEARCH, "Cannot replace with segment meta '", meta_file,
-               "': ", e.what());
-      return false;
+      throw IoError{absl::StrCat("cannot replace with segment meta '",
+                                 meta_file,
+                                 "': ", duckdb::ErrorData{e}.RawMessage())};
     }
     if (entry.segment.meta.live_docs_count == 0) {
       continue;  // nothing to adopt; the sources are still replaced
     }
     auto meta_ref = directory_utils::Reference(_dir, entry.segment.filename);
     if (!meta_ref) {
-      SDB_WARN(IRESEARCH, "Cannot replace with segment meta '",
-               entry.segment.filename, "': failed to reference it");
-      return false;
+      throw IoError{absl::StrCat("cannot replace with segment meta '",
+                                 entry.segment.filename,
+                                 "': failed to reference it")};
     }
     entry.reader = SegmentReaderImpl::Open(_dir, entry.segment.meta,
                                            GetSnapshotImpl()->Options());
     if (!entry.reader) {
-      SDB_WARN(IRESEARCH, "Cannot replace with segment meta '",
-               entry.segment.filename, "': failed to open it");
-      return false;
+      throw IoError{absl::StrCat("cannot replace with segment meta '",
+                                 entry.segment.filename,
+                                 "': failed to open it")};
     }
     entry.refs.emplace_back(std::move(meta_ref));
     adopted.push_back(std::move(entry));
@@ -1773,9 +1769,8 @@ bool IndexWriter::ReplaceSegments(
   _commit_lock.ForgetDeadlockInfo();
   std::shared_lock commit_lock{_commit_lock};
   if (_pending_state.Valid()) {
-    SDB_WARN(IRESEARCH,
-             "Cannot replace segments while a begun commit is not finished");
-    return false;
+    throw IoError{
+      "cannot replace segments while a begun commit is not finished"};
   }
 
   // Pin the committed state: the candidate names are masked as string_views
@@ -1808,7 +1803,7 @@ bool IndexWriter::ReplaceSegments(
 
   QueryContext::FilterPtr removal;
   if (!removal_provider(removal)) {
-    return true;
+    return;
   }
 
   auto flush = GetFlushContext();
@@ -1844,7 +1839,6 @@ bool IndexWriter::ReplaceSegments(
   for (const auto name : masked) {
     segment_mask.emplace(name);
   }
-  return true;
 }
 
 IndexWriter::FlushContextPtr IndexWriter::GetFlushContext() const noexcept
