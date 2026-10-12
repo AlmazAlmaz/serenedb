@@ -236,6 +236,8 @@ class IndexWriter : private util::Noncopyable {
 
     explicit operator bool() const noexcept { return _writer.valid(); }
 
+    std::string_view Error() const noexcept { return _writer.Error(); }
+
     template<typename... Args>
     bool WithField(Args&&... args) const {
       return _writer.WithField(std::forward<Args>(args)...);

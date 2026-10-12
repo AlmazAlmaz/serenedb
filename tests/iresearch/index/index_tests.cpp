@@ -1147,6 +1147,7 @@ class IndexTestCase : public tests::IndexTestBase {
       ASSERT_TRUE(tests::InsertField(doc, valid_field));
       ASSERT_FALSE(tests::InsertField(doc, invalid_field));
       ASSERT_FALSE(doc);
+      ASSERT_EQ("the field was created with other index features", doc.Error());
       // entire batch should be rollbacked
     }
     ASSERT_TRUE(InsertWithName(*writer, *doc3));
