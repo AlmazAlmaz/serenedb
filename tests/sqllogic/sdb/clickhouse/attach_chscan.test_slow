@@ -133,3 +133,28 @@ DETACH ch2;
 
 statement ok
 DROP SECRET chsecret_${__DATABASE__};
+
+
+# An unnamed secret is DuckDB's __default_clickhouse, used by an ATTACH that names
+# no secret; compression is one of its options.
+statement ok
+CREATE OR REPLACE SECRET (TYPE clickhouse, host '${CHHOST}', port '${CHPORT}', user 'default', compression 'zstd');
+
+
+statement ok
+ATTACH '' AS ch3 (TYPE clickhouse);
+
+
+query
+SELECT count(*) AS n FROM ch3.chtest.widgets;
+----
+n
+5
+
+
+statement ok
+DETACH ch3;
+
+
+statement ok
+DROP SECRET __default_clickhouse;

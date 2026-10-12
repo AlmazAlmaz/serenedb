@@ -34,7 +34,7 @@ static unique_ptr<SecretEntry> GetSecretEntry(ClientContext &context, const stri
 	string name = secret_name;
 	bool explicit_secret = !name.empty();
 	if (!explicit_secret) {
-		name = "clickhouse";
+		name = "__default_clickhouse";
 	}
 	auto secret_entry = GetSecret(context, name);
 	if (!secret_entry && explicit_secret) {
