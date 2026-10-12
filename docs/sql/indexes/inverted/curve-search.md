@@ -88,11 +88,14 @@ range of the data, per coordinate:
 <SqlLogicTest id="sql/indexes/inverted/curve-search/normalized" />
 
 Integers, dates, timestamps and IPv4 addresses are shifted so that the declared
-range starts at zero and fills the leading bits, which keeps every value inside
-the range distinct. FLOAT and DOUBLE values are mapped linearly onto the 64-bit
-range. IPv6 ranges are described [below](#inet-coordinates). Values outside the range take the position of the nearest end and are
-still found, since the exact check compares the real values. A NULL component
-leaves that axis as it is; the bounds must be finite with `lower < upper`.
+range starts at zero and fills the leading bits, which keeps distinct integers,
+dates and timestamps inside the range distinct; INET positions ignore masks.
+FLOAT and DOUBLE values are mapped linearly onto the 64-bit range. IPv6 ranges
+are described [below](#inet-coordinates). Values outside the range take the
+position of the nearest end and are still found, since the exact check compares
+the real values. A NULL component leaves that axis as it is. Every pair of
+bounds needs `lower < upper`; FLOAT and DOUBLE bounds and their difference must
+be finite, while date and timestamp bounds can be infinite.
 
 On 10,000 points with `x` in `[0, 100)` and `y` in `[0, 10^9)`, a box matching
 220 rows produced 2,003 candidates without normalization and 234 with it. With
@@ -109,7 +112,9 @@ repeats them.
 INET values order by family, then address, then mask. The curve places IPv4
 addresses in the lower half of the axis and IPv6 addresses in the upper half,
 by their leading 63 bits. Masks and the lowest IPv6 bits do not change the
-position; the exact check still compares them.
+position; the exact check still compares them. Normalization bounds must have
+increasing positions, so bounds that differ only in their mask cannot define a
+range.
 
 When `lower` and `upper` of an INET coordinate are both IPv6 addresses, the axis
 measures the full 128-bit distance from `lower`. A range of up to 2^64
@@ -148,9 +153,11 @@ cover into up to 1,233 query terms.
 ## Choosing a depth
 
 `max_level` sets the number of coordinate bits of the deepest cell, and every
-indexed level writes one term per row. Doubles, dates and timestamps usually
-differ within their upper bits, because the ordered encoding starts with the
-sign and the exponent, so a shallower index often selects the same candidates.
+indexed level writes one term per row. Doubles usually differ within their
+upper bits, because their ordered encoding starts with the sign and the
+exponent, so a shallower index often selects the same candidates. Dates and
+timestamps use signed integer keys, so their useful depth depends on the unit
+and the range of the data.
 On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
 range 1000 wide, with an index of 100 MB instead of 386 MB built in 0.61 s
