@@ -175,7 +175,7 @@ t
 statement error
 SELECT curve('::1'::INET, 2, lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8::'::INET, NULL));
 ----
-db error: ERROR: curve(): coordinate 1 needs finite bounds with lower < upper, got 2001:db8:1:: and 2001:db8::
+db error: ERROR: curve(): coordinate 1 needs INET bounds with lower < upper on the curve; masks do not change the position, got 2001:db8:1:: and 2001:db8::
 
 
 statement ok
