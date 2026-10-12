@@ -25,6 +25,7 @@
 #include <duckdb/common/vector/constant_vector.hpp>
 #include <duckdb/common/vector/flat_vector.hpp>
 #include <duckdb/common/vector/string_vector.hpp>
+#include <duckdb/common/vector/unified_vector_format.hpp>
 #include <duckdb/execution/expression_executor.hpp>
 #include <duckdb/planner/expression/bound_constant_expression.hpp>
 #include <duckdb/planner/expression/bound_function_expression.hpp>
@@ -405,42 +406,50 @@ void Normalize(CurveAxis& axis, uint32_t index, const duckdb::Value* lower,
 
 }  // namespace
 
-std::optional<CurveKey> CurveAxis::BoundKey(const duckdb::Value& bound) const {
-  const auto raw = ToRaw(family, bound);
+std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
+                                      const duckdb::Value& bound) {
+  const auto raw = ToRaw(axis.family, bound);
   if (!raw) {
     return std::nullopt;
   }
-  return CurveKey{.key = family == CurveFamily::Float
-                           ? MapDouble(*this, raw->value)
-                           : MapKey(*this, raw->key),
-                  .exact = raw->exact && Injective()};
+  const bool injective = !axis.normalized && axis.family != CurveFamily::Inet;
+  return CurveKey{.key = axis.family == CurveFamily::Float
+                           ? MapDouble(axis, raw->value)
+                           : MapKey(axis, raw->key),
+                  .exact = raw->exact && injective};
 }
 
-std::pair<uint64_t, uint64_t> CurveAxis::Limits() const noexcept {
+CurveInterval CurveLimits(const CurveAxis& axis) noexcept {
   constexpr auto kMax = std::numeric_limits<uint64_t>::max();
-  if (normalized) {
-    return {0, kMax};
+  if (axis.normalized) {
+    return {.max = kMax};
   }
-  switch (family) {
+  switch (axis.family) {
     case CurveFamily::Float:
       return {
-        irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
-        irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN())};
+        .min =
+          irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
+        .max =
+          irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN()),
+      };
     case CurveFamily::Signed:
     case CurveFamily::Date: {
-      const auto width = IntegerWidth(type.id());
+      const auto width = IntegerWidth(axis.type.id());
       if (width == 64) {
-        return {0, kMax};
+        return {.max = kMax};
       }
       const auto half = uint64_t{1} << (width - 1);
-      return {irs::curve::kSignBit - half, irs::curve::kSignBit + half - 1};
+      return {
+        .min = irs::curve::kSignBit - half,
+        .max = irs::curve::kSignBit + half - 1,
+      };
     }
     case CurveFamily::Unsigned: {
-      const auto width = IntegerWidth(type.id());
-      return {0, width == 64 ? kMax : (uint64_t{1} << width) - 1};
+      const auto width = IntegerWidth(axis.type.id());
+      return {.max = width == 64 ? kMax : (uint64_t{1} << width) - 1};
     }
     default:
-      return {0, kMax};
+      return {.max = kMax};
   }
 }
 
@@ -517,10 +526,11 @@ const CurveSpec* TryGetCurveSpec(const duckdb::Expression& expression) {
     return nullptr;
   }
   const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
-  if (function.Function().GetName().GetIdentifierName() != kCurveFunction) {
+  if (function.Function().GetName().GetIdentifierName() != kCurveFunction ||
+      !function.BindInfo()) {
     return nullptr;
   }
-  return dynamic_cast<const CurveSpec*>(function.BindInfo().get());
+  return &function.BindInfo()->Cast<CurveSpec>();
 }
 
 void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,

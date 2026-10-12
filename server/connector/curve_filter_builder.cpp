@@ -183,7 +183,7 @@ const duckdb::Value* Component(const duckdb::Value& bounds, uint32_t axis,
 
 CurveKey QueryKey(const CurveAxis& axis, const duckdb::Value& bound,
                   uint32_t index) {
-  const auto key = axis.BoundKey(bound);
+  const auto key = CurveBoundKey(axis, bound);
   if (!key) {
     THROW_SQL_ERROR(
       ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
@@ -362,7 +362,9 @@ bool ClaimCurveMatch(
   for (uint32_t axis = 0; axis < dimensions; ++axis) {
     const auto& target = spec->axes[axis];
     const auto& coordinate = *coordinates[axis];
-    std::tie(box.min[axis], box.max[axis]) = target.Limits();
+    const auto limits = CurveLimits(target);
+    box.min[axis] = limits.min;
+    box.max[axis] = limits.max;
     const auto* lo = Component(*lower, axis, dimensions);
     const auto* hi = Component(*upper, axis, dimensions);
     if (target.family == CurveFamily::Null) {
@@ -435,7 +437,9 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
     const auto& target = spec->axes[axis];
     bool has_lower = false;
     bool has_upper = false;
-    std::tie(box.min[axis], box.max[axis]) = target.Limits();
+    const auto limits = CurveLimits(target);
+    box.min[axis] = limits.min;
+    box.max[axis] = limits.max;
     const auto& indexed = PeelCast(*coordinates[axis]);
     for (const auto& range : ranges) {
       const auto* component = &PeelCast(*range.component);
@@ -452,13 +456,15 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
       std::optional<CurveKey> upper;
       if (range.lower) {
         const auto value = Fold(context, *range.lower);
-        if (!value || value->IsNull() || !(lower = target.BoundKey(*value))) {
+        if (!value || value->IsNull() ||
+            !(lower = CurveBoundKey(target, *value))) {
           continue;
         }
       }
       if (range.upper) {
         const auto value = Fold(context, *range.upper);
-        if (!value || value->IsNull() || !(upper = target.BoundKey(*value))) {
+        if (!value || value->IsNull() ||
+            !(upper = CurveBoundKey(target, *value))) {
           continue;
         }
       }

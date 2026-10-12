@@ -22,17 +22,12 @@
 
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/types/value.hpp>
-#include <duckdb/common/vector/unified_vector_format.hpp>
 #include <duckdb/function/function.hpp>
+#include <duckdb/planner/expression.hpp>
 #include <iresearch/analysis/tokenizer.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <optional>
 
-namespace duckdb {
-
-class Expression;
-
-}  // namespace duckdb
 namespace sdb::connector {
 
 inline constexpr std::string_view kCurveFunction = "curve";
@@ -53,6 +48,11 @@ struct CurveKey {
   bool exact = false;
 };
 
+struct CurveInterval {
+  uint64_t min = 0;
+  uint64_t max = 0;
+};
+
 struct CurveAxis {
   duckdb::LogicalType type;
   CurveFamily family = CurveFamily::Null;
@@ -62,17 +62,14 @@ struct CurveAxis {
   double lo = 0;
   double hi = 0;
 
-  bool Injective() const noexcept {
-    return !normalized && family != CurveFamily::Inet;
-  }
-  std::optional<CurveKey> BoundKey(const duckdb::Value& bound) const;
-  std::pair<uint64_t, uint64_t> Limits() const noexcept;
-
   bool operator==(const CurveAxis&) const = default;
 };
 
-class CurveSpec final : public duckdb::FunctionData {
- public:
+std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
+                                      const duckdb::Value& bound);
+CurveInterval CurveLimits(const CurveAxis& axis) noexcept;
+
+struct CurveSpec final : public duckdb::FunctionData {
   irs::curve::Options options;
   std::array<CurveAxis, irs::curve::kMaxDimensions> axes;
 
