@@ -601,6 +601,19 @@ def test_standalone_commit_rollback_no_txn_warns_25p01():
         c.close()
 
 
+def test_engine_warning_reaches_the_client_as_a_notice():
+    c = psycopg.connect(**conn_kwargs(), autocommit=True)
+    diags: list[tuple] = []
+    c.add_notice_handler(lambda d: diags.append((d.severity, d.message_primary)))
+    try:
+        with c.cursor() as cur:
+            cur.execute("SET profiling_mode = 'standard'")
+        assert [s for s, _ in diags] == ["WARNING"], diags
+        assert "profiling_mode setting is deprecated" in diags[0][1], diags
+    finally:
+        c.close()
+
+
 def test_copy_text_header():
     # PG honors HEADER in FORMAT text (DuckDB treats it as csv-only): TO STDOUT
     # emits the column-name header line, FROM STDIN skips the first line.
