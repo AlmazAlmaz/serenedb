@@ -920,8 +920,6 @@ handle_t Open(const path_char_t* path, OpenMode mode, int advice) noexcept {
 #endif
   auto fd = ::open(path ? path : "/dev/null", posix_mode, S_IRUSR | S_IWUSR);
   if (fd < 0) {
-    SDB_ERROR(IRESEARCH, "Failed to open file, error: ", GET_ERROR(),
-              ", path: ", path);
     return handle_t(nullptr);
   }
 #ifdef __APPLE__

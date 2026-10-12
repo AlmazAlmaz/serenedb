@@ -69,10 +69,6 @@ uint64_t ReadFile(const Directory& dir, std::string_view filename,
                   std::vector<IndexSegment>* segments) {
   auto in = dir.open(filename, IOAdvice::SEQUENTIAL | IOAdvice::READONCE);
 
-  if (!in) {
-    throw IoError{absl::StrCat("Failed to open file, path: ", filename)};
-  }
-
   uint64_t cnt = 0;
   format_utils::ReadFooter(
     *in, filename, [&](duckdb::BinaryDeserializer& meta_in, uint64_t) {

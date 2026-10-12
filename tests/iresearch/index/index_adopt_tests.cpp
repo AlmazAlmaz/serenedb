@@ -47,11 +47,9 @@ class CountingDirectory : public tests::DirectoryMock {
   explicit CountingDirectory(irs::Directory& impl)
     : tests::DirectoryMock{impl} {}
 
-  irs::IndexOutput::ptr create(std::string_view name) noexcept final {
+  irs::IndexOutput::ptr create(std::string_view name) final {
     auto out = tests::DirectoryMock::create(name);
-    if (out) {
-      ++_creates[std::string{name}];
-    }
+    ++_creates[std::string{name}];
     return out;
   }
 

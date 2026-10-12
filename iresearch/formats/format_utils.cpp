@@ -138,10 +138,6 @@ void PrepareOutput(std::string& str, IndexOutput::ptr& out,
 
   FileName(str, state.name, ext);
   out = state.dir->create(str);
-
-  if (!out) {
-    throw IoError{absl::StrCat("Failed to create file, path: ", str)};
-  }
 }
 
 }  // namespace irs::format_utils

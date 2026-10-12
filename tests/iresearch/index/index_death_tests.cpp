@@ -193,9 +193,9 @@ class FailingDirectory : public tests::DirectoryMock {
 
   bool NoFailures() const noexcept { return _failures.empty(); }
 
-  irs::IndexOutput::ptr create(std::string_view name) noexcept final {
+  irs::IndexOutput::ptr create(std::string_view name) final {
     if (ShouldFail(Failure::CREATE, name)) {
-      return nullptr;
+      throw irs::IoError{absl::StrCat("injected create failure: ", name)};
     }
 
     return tests::DirectoryMock::create(name);
@@ -229,9 +229,9 @@ class FailingDirectory : public tests::DirectoryMock {
     return tests::DirectoryMock::mtime(result, name);
   }
   irs::IndexInput::ptr open(std::string_view name,
-                            irs::IOAdvice advice) const noexcept final {
+                            irs::IOAdvice advice) const final {
     if (ShouldFail(Failure::OPEN, name)) {
-      return nullptr;
+      throw irs::IoError{absl::StrCat("injected open failure: ", name)};
     }
 
     return std::make_unique<FailingIndexInput>(

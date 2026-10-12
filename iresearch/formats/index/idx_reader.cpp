@@ -61,9 +61,6 @@ IdxReader::IdxReader(const Directory& dir, std::string_view segment_name)
   }
 
   _impl->in = dir.open(filename, IOAdvice::SEQUENTIAL);
-  if (!_impl->in) {
-    throw IoError{absl::StrCat("Failed to open index file, path: ", filename)};
-  }
 
   format_utils::ReadFooter(
     *_impl->in, filename, [&](duckdb::BinaryDeserializer& footer, uint64_t) {

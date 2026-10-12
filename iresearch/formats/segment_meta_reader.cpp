@@ -106,10 +106,6 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
 
   auto in = dir.open(filename, IOAdvice::SEQUENTIAL);
 
-  if (!in) [[unlikely]] {
-    throw IoError{absl::StrCat("Failed to open file, path: ", filename)};
-  }
-
   std::vector<uint64_t> parents;
   std::vector<std::string> files;
   bool has_files = false;
@@ -154,10 +150,6 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
       auto file = irs::FileName(name, link, kExt);
 
       auto mask_in = dir.open(file, IOAdvice::SEQUENTIAL);
-
-      if (!mask_in) [[unlikely]] {
-        throw IoError{absl::StrCat("Failed to open file, path: ", file)};
-      }
 
       const auto link_footer = ReadLink(*mask_in, file, files, has_files);
 

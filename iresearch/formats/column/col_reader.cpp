@@ -54,12 +54,7 @@ IndexInput::ptr OpenColFile(const Directory& dir, std::string_view segment_name,
   if (!exists) {
     return nullptr;
   }
-  auto in = dir.open(filename, advice);
-  if (!in) {
-    throw IoError{
-      absl::StrCat("col reader: cannot open .col file: ", filename)};
-  }
-  return in;
+  return dir.open(filename, advice);
 }
 
 void CheckBlockRange(const ColumnBlockMeta& m, field_id id,

@@ -119,10 +119,6 @@ void Write(Directory& dir, std::string& meta_file, SegmentMeta& meta,
   meta_file = FileName(meta);
   auto out = dir.create(meta_file);
 
-  if (!out) [[unlikely]] {
-    throw IoError{absl::StrCat("failed to create file, path: ", meta_file)};
-  }
-
   if (has_mask) {
     WriteDocumentMask(*out, compressed, mask_size);
   }

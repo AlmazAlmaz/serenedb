@@ -77,10 +77,6 @@ void IdxWriter::EnsureOut() {
     return;
   }
   _impl->out = _impl->dir->create(_impl->filename);
-  if (!_impl->out) {
-    throw IoError{
-      absl::StrCat("Failed to create index file, path: ", _impl->filename)};
-  }
 }
 
 IndexOutput& IdxWriter::BlocksOut() {

@@ -25,6 +25,8 @@
 
 #include <absl/strings/str_cat.h>
 
+#include <cstring>
+
 #include "iresearch/error/error.hpp"
 #include "iresearch/store/directory_attributes.hpp"
 #include "iresearch/store/directory_cleaner.hpp"
@@ -154,33 +156,32 @@ class FsLock : public IndexLock {
 class FSIndexOutput final : public IndexOutput {
  public:
   static ptr Open(const path_char_t* name,
-                  const ResourceManagementOptions& rm) noexcept {
+                  const ResourceManagementOptions& rm) {
     SDB_ASSERT(name);
     size_t descriptors = 0;
     size_t memory = 0;
-    try {
-      rm.file_descriptors->Increase(1);
-      descriptors = 1;
+    Finally cleanup = [&]() noexcept {
+      rm.file_descriptors->DecreaseChecked(descriptors);
+      rm.transactions->DecreaseChecked(memory);
+    };
+    rm.file_descriptors->Increase(1);
+    descriptors = 1;
 
-      auto handle =
-        file_utils::Open(name, file_utils::OpenMode::Write, IR_FADVICE_NORMAL);
-      if (handle) [[likely]] {
-        rm.transactions->Increase(sizeof(FSIndexOutput));
-        memory = sizeof(FSIndexOutput);
-
-        ptr ptr{new FSIndexOutput{std::move(handle), rm}};
-        descriptors = 0;
-        memory = 0;
-        return ptr;
-      }
-
-      SDB_ERROR(IRESEARCH, "Failed to open output file, error: ", GET_ERROR(),
-                ", path: ", file_utils::ToStr(name));
-    } catch (...) {
+    auto handle =
+      file_utils::Open(name, file_utils::OpenMode::Write, IR_FADVICE_NORMAL);
+    if (!handle) [[unlikely]] {
+      const int error = GET_ERROR();
+      throw IoError{absl::StrCat("Failed to create file '",
+                                 file_utils::ToStr(name),
+                                 "': ", std::strerror(error))};
     }
-    rm.file_descriptors->DecreaseChecked(descriptors);
-    rm.transactions->DecreaseChecked(memory);
-    return nullptr;
+    rm.transactions->Increase(sizeof(FSIndexOutput));
+    memory = sizeof(FSIndexOutput);
+
+    ptr ptr{new FSIndexOutput{std::move(handle), rm}};
+    descriptors = 0;
+    memory = 0;
+    return ptr;
   }
 
  private:
@@ -313,8 +314,7 @@ class FsIndexInput : public BufferedIndexInput {
 
   static IndexInput::ptr Open(const path_char_t* name, size_t pool_size,
                               IOAdvice advice,
-                              const ResourceManagementOptions& rm) noexcept
-    try {
+                              const ResourceManagementOptions& rm) {
     SDB_ASSERT(name);
 
     size_t descriptors = 1;
@@ -329,16 +329,17 @@ class FsIndexInput : public BufferedIndexInput {
                                       GetPosixFadvice(handle->io_advice));
 
     if (nullptr == handle->handle) {
-      SDB_ERROR(IRESEARCH, "Failed to open input file, error: ", GET_ERROR(),
-                ", path: ", file_utils::ToStr(name));
-      return nullptr;
+      const int error = GET_ERROR();
+      throw IoError{absl::StrCat("Failed to open file '",
+                                 file_utils::ToStr(name),
+                                 "': ", std::strerror(error))};
     }
     uint64_t size;
     if (!file_utils::ByteSize(size, *handle)) {
-      SDB_ERROR(IRESEARCH,
-                "Failed to get stat for input file, error: ", GET_ERROR(),
-                ", path: ", file_utils::ToStr(name));
-      return nullptr;
+      const int error = GET_ERROR();
+      throw IoError{absl::StrCat("Failed to get the size of file '",
+                                 file_utils::ToStr(name),
+                                 "': ", std::strerror(error))};
     }
 
     handle->size = size;
@@ -346,8 +347,6 @@ class FsIndexInput : public BufferedIndexInput {
     ptr input{new FsIndexInput(std::move(handle), pool_size)};
     descriptors = 0;
     return input;
-  } catch (...) {
-    return nullptr;
   }
 
  protected:
@@ -550,21 +549,9 @@ FSDirectory::FSDirectory(std::filesystem::path dir, DirectoryAttributes attrs,
     _dir{std::move(dir)},
     _fd_pool_size{fd_pool_size} {}
 
-IndexOutput::ptr FSDirectory::create(std::string_view name) noexcept {
-  try {
-    const auto path = _dir / name;
-
-    auto out = FSIndexOutput::Open(path.c_str(), ResourceManager());
-
-    if (!out) {
-      SDB_ERROR(IRESEARCH, "Failed to open output file, path: ", name);
-    }
-
-    return out;
-  } catch (...) {
-  }
-
-  return nullptr;
+IndexOutput::ptr FSDirectory::create(std::string_view name) {
+  const auto path = _dir / name;
+  return FSIndexOutput::Open(path.c_str(), ResourceManager());
 }
 
 const std::filesystem::path& FSDirectory::path() const noexcept { return _dir; }
@@ -599,16 +586,10 @@ bool FSDirectory::remove(std::string_view name) noexcept {
 }
 
 IndexInput::ptr FSDirectory::open(std::string_view name,
-                                  IOAdvice advice) const noexcept {
-  try {
-    const auto path = _dir / name;
-
-    return FsIndexInput::Open(path.c_str(), _fd_pool_size, advice,
-                              ResourceManager());
-  } catch (...) {
-  }
-
-  return nullptr;
+                                  IOAdvice advice) const {
+  const auto path = _dir / name;
+  return FsIndexInput::Open(path.c_str(), _fd_pool_size, advice,
+                            ResourceManager());
 }
 
 bool FSDirectory::rename(std::string_view src, std::string_view dst) noexcept {

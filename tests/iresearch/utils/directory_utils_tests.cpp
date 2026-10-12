@@ -39,8 +39,8 @@ class DirectoryUtilsTests : public ::testing::Test {
 
     irs::DirectoryAttributes& attributes() noexcept final { return _attrs; }
 
-    irs::IndexOutput::ptr create(std::string_view) noexcept final {
-      return nullptr;
+    irs::IndexOutput::ptr create(std::string_view name) final {
+      throw irs::IoError{absl::StrCat("cannot create ", name)};
     }
 
     bool exists(bool&, std::string_view) const noexcept final { return false; }
@@ -57,9 +57,9 @@ class DirectoryUtilsTests : public ::testing::Test {
       return false;
     }
 
-    irs::IndexInput::ptr open(std::string_view,
-                              irs::IOAdvice) const noexcept final {
-      return nullptr;
+    irs::IndexInput::ptr open(std::string_view name,
+                              irs::IOAdvice) const final {
+      throw irs::IoError{absl::StrCat("cannot open ", name)};
     }
 
     bool remove(std::string_view) noexcept final { return false; }
@@ -85,7 +85,7 @@ class DirectoryUtilsTests : public ::testing::Test {
       : tests::DirectoryMock(impl), after(p) {}
 
     irs::IndexInput::ptr open(std::string_view name,
-                              irs::IOAdvice advice) const noexcept final {
+                              irs::IOAdvice advice) const final {
       auto stream = tests::DirectoryMock::open(name, advice);
       after();
       return stream;
@@ -249,8 +249,8 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
 
     irs::DirectoryAttributes attrs{};
     irs::DirectoryAttributes& attributes() noexcept final { return attrs; }
-    irs::IndexOutput::ptr create(std::string_view) noexcept final {
-      return nullptr;
+    irs::IndexOutput::ptr create(std::string_view name) final {
+      throw irs::IoError{absl::StrCat("cannot create ", name)};
     }
     bool exists(bool&, std::string_view) const noexcept final { return false; }
     bool length(uint64_t&, std::string_view) const noexcept final {
@@ -263,9 +263,9 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
     bool mtime(std::time_t&, std::string_view) const noexcept final {
       return false;
     }
-    irs::IndexInput::ptr open(std::string_view,
-                              irs::IOAdvice) const noexcept final {
-      return nullptr;
+    irs::IndexInput::ptr open(std::string_view name,
+                              irs::IOAdvice) const final {
+      throw irs::IoError{absl::StrCat("cannot open ", name)};
     }
     bool remove(std::string_view) noexcept final { return false; }
     bool rename(std::string_view, std::string_view) noexcept final {
@@ -280,7 +280,7 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
   {
     irs::RefTrackingDirectory track_dir(error_dir);
 
-    ASSERT_FALSE(track_dir.create("abc"));
+    ASSERT_THROW(track_dir.create("abc"), irs::IoError);
 
     ASSERT_TRUE(track_dir.GetRefs().empty());
   }
@@ -289,7 +289,7 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
   {
     irs::RefTrackingDirectory track_dir(error_dir, true);
 
-    ASSERT_FALSE(track_dir.open("abc", irs::IOAdvice::NORMAL));
+    ASSERT_THROW(track_dir.open("abc", irs::IOAdvice::NORMAL), irs::IoError);
 
     ASSERT_TRUE(track_dir.GetRefs().empty());
   }

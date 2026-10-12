@@ -96,10 +96,6 @@ void ColWriter::EnsureOut() {
     return;
   }
   _out = _dir->create(_filename);
-  if (!_out) {
-    throw IoError{
-      absl::StrCat("col writer: cannot create .col file: ", _filename)};
-  }
   _write_ctx = std::make_unique<WriteContext>(*_db, *_out);
 }
 

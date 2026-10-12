@@ -63,11 +63,6 @@ bool IndexMetaWriter::prepare(Directory& dir, IndexMeta& meta,
 
   auto out = dir.create(pending_filename);
 
-  if (!out) {
-    throw IoError{
-      absl::StrCat("Failed to create file, path: ", pending_filename)};
-  }
-
   format_utils::WriteFooter(*out, [&](duckdb::BinarySerializer& meta_out) {
     meta_out.WriteProperty<uint64_t>(
       index_meta::kFieldStorageVersion, "storage_version",

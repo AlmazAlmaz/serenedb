@@ -237,7 +237,7 @@ class MemoryDirectory final : public Directory {
 
   DirectoryAttributes& attributes() noexcept final { return _attrs; }
 
-  IndexOutput::ptr create(std::string_view name) noexcept final;
+  IndexOutput::ptr create(std::string_view name) final;
 
   bool exists(bool& result, std::string_view name) const noexcept final;
 
@@ -247,8 +247,7 @@ class MemoryDirectory final : public Directory {
 
   bool mtime(std::time_t& result, std::string_view name) const noexcept final;
 
-  IndexInput::ptr open(std::string_view name,
-                       IOAdvice advice) const noexcept final;
+  IndexInput::ptr open(std::string_view name, IOAdvice advice) const final;
 
   bool remove(std::string_view name) noexcept final;
 

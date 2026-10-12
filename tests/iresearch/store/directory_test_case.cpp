@@ -4295,7 +4295,15 @@ TEST_P(DirectoryTestCase, smoke_store) {
   EXPECT_EQ(0, files.size());
 
   // Try to open non existing input
-  ASSERT_FALSE(dir.open("invalid_file_name", irs::IOAdvice::NORMAL));
+  try {
+    dir.open("invalid_file_name", irs::IOAdvice::NORMAL);
+    FAIL() << "opening a missing file must throw";
+  } catch (const irs::IoError& e) {
+    const std::string_view what = e.what();
+    EXPECT_NE(std::string_view::npos, what.find("invalid_file_name")) << what;
+    EXPECT_NE(std::string_view::npos, what.find("No such file or directory"))
+      << what;
+  }
 
   // Check locking logic
   auto l = dir.make_lock("sample_lock");

@@ -25,6 +25,8 @@
 #include <absl/strings/str_cat.h>
 #include <liburing.h>
 
+#include <cstring>
+
 #include "iresearch/error/error.hpp"
 #include "iresearch/utils/crc.hpp"
 #include "iresearch/utils/file_utils_ext.hpp"
@@ -244,8 +246,7 @@ void AsyncFile::Drain(bool wait) {
 
 class AsyncIndexOutput final : public IndexOutput {
  public:
-  static IndexOutput::ptr Open(const path_char_t* name,
-                               AsyncFilePtr&& async) noexcept;
+  static IndexOutput::ptr Open(const path_char_t* name, AsyncFilePtr&& async);
 
   void Flush() final;
 
@@ -303,31 +304,27 @@ class AsyncIndexOutput final : public IndexOutput {
 };
 
 IndexOutput::ptr AsyncIndexOutput::Open(const path_char_t* name,
-                                        AsyncFilePtr&& async) noexcept {
+                                        AsyncFilePtr&& async) {
   SDB_ASSERT(name);
 
   if (!async) {
-    return nullptr;
+    throw IoError{absl::StrCat("Failed to create file '",
+                               file_utils::ToStr(name),
+                               "': no asynchronous I/O queue")};
   }
 
   file_utils::handle_t handle(
     file_utils::Open(name, file_utils::OpenMode::Write, IR_FADVICE_NORMAL));
 
   if (nullptr == handle) {
-    SDB_ERROR(IRESEARCH,
-              absl::StrCat("Failed to open output file, error: ", GET_ERROR(),
-                           ", path: ", file_utils::ToStr(name)));
-
-    return nullptr;
+    const int error = GET_ERROR();
+    throw IoError{absl::StrCat("Failed to create file '",
+                               file_utils::ToStr(name),
+                               "': ", std::strerror(error))};
   }
 
-  try {
-    return IndexOutput::ptr{
-      new AsyncIndexOutput{std::move(async), std::move(handle)}};
-  } catch (...) {
-  }
-
-  return nullptr;
+  return IndexOutput::ptr{
+    new AsyncIndexOutput{std::move(async), std::move(handle)}};
 }
 
 void AsyncIndexOutput::Flush() {
@@ -380,18 +377,11 @@ AsyncDirectory::AsyncDirectory(std::filesystem::path dir,
     _queue_size{queue_size},
     _flags{flags} {}
 
-IndexOutput::ptr AsyncDirectory::create(std::string_view name) noexcept {
+IndexOutput::ptr AsyncDirectory::create(std::string_view name) {
   std::filesystem::path path;
-
-  try {
-    (path /= this->path()) /= name;
-
-    return AsyncIndexOutput::Open(path.c_str(),
-                                  _async_pool.emplace(_queue_size, _flags));
-  } catch (...) {
-  }
-
-  return nullptr;
+  (path /= this->path()) /= name;
+  return AsyncIndexOutput::Open(path.c_str(),
+                                _async_pool.emplace(_queue_size, _flags));
 }
 
 bool AsyncDirectory::sync(std::span<const std::string_view> names) noexcept {
