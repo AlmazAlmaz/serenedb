@@ -351,6 +351,14 @@ uint64_t AxisKey(const CurveAxis& axis,
   }
 }
 
+void ReplaceOption(duckdb::unique_ptr<duckdb::Expression>& argument,
+                   duckdb::Value value) {
+  auto alias = argument->GetAlias();
+  argument =
+    duckdb::make_uniq<duckdb::BoundConstantExpression>(std::move(value));
+  argument->SetAlias(std::move(alias));
+}
+
 duckdb::Value OptionValue(duckdb::ClientContext& context,
                           duckdb::unique_ptr<duckdb::Expression>& argument,
                           std::string_view name) {
@@ -360,9 +368,7 @@ duckdb::Value OptionValue(duckdb::ClientContext& context,
       ERR_MSG("curve(): option \"", name, "\" must be a constant"));
   }
   auto value = duckdb::ExpressionExecutor::EvaluateScalar(context, *argument);
-  auto alias = argument->GetAlias();
-  argument = duckdb::make_uniq<duckdb::BoundConstantExpression>(value);
-  argument->SetAlias(std::move(alias));
+  ReplaceOption(argument, value);
   return value;
 }
 
@@ -407,18 +413,21 @@ const duckdb::Value* BoundComponent(const duckdb::Value& bounds,
             target.type.ToString(), "; cast the bound explicitly"));
 }
 
-[[noreturn]] void ThrowUnorderedBounds(duckdb::ClientContext& context,
-                                       uint32_t index,
-                                       const duckdb::Value& lower,
-                                       const duckdb::Value& upper) {
+[[noreturn]] void ThrowBadBounds(duckdb::ClientContext& context, uint32_t index,
+                                 std::string_view need,
+                                 const duckdb::Value& lower,
+                                 const duckdb::Value& upper) {
   const auto text = [&](const duckdb::Value& value) {
     return value.CastAs(context, duckdb::LogicalType::VARCHAR).ToString();
   };
   THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
-                  ERR_MSG("curve(): coordinate ", index + 1,
-                          " needs finite bounds with lower < upper, got ",
-                          text(lower), " and ", text(upper)));
+                  ERR_MSG("curve(): coordinate ", index + 1, " needs ", need,
+                          ", got ", text(lower), " and ", text(upper)));
 }
+
+constexpr std::string_view kInetBoundsNeed =
+  "INET bounds with lower < upper on the curve; masks do not change the "
+  "position";
 
 void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
                const duckdb::Value* lower, const duckdb::Value* upper) {
@@ -438,7 +447,7 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
       axis.ipv6_lo = Ipv6Address(lo->address);
       axis.ipv6_hi = Ipv6Address(hi->address);
       if (axis.ipv6_lo >= axis.ipv6_hi) {
-        ThrowUnorderedBounds(context, index, *lower, *upper);
+        ThrowBadBounds(context, index, kInetBoundsNeed, *lower, *upper);
       }
       axis.normalized = true;
       axis.ipv6_range = true;
@@ -453,13 +462,22 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
   if (!hi) {
     ThrowBoundMismatch("upper bound", *upper, index, axis);
   }
-  const bool ordered =
-    axis.family == CurveFamily::Float
-      ? std::isfinite(lo->value) && std::isfinite(hi->value) &&
-          lo->value < hi->value && std::isfinite(hi->value - lo->value)
-      : lo->key < hi->key;
-  if (!ordered) {
-    ThrowUnorderedBounds(context, index, *lower, *upper);
+  if (axis.family == CurveFamily::Float) {
+    if (!std::isfinite(lo->value) || !std::isfinite(hi->value) ||
+        !(lo->value < hi->value)) {
+      ThrowBadBounds(context, index, "finite bounds with lower < upper", *lower,
+                     *upper);
+    }
+    if (!std::isfinite(hi->value - lo->value)) {
+      ThrowBadBounds(context, index, "bounds with a finite difference", *lower,
+                     *upper);
+    }
+  } else if (lo->key >= hi->key) {
+    ThrowBadBounds(context, index,
+                   axis.family == CurveFamily::Inet
+                     ? kInetBoundsNeed
+                     : std::string_view{"bounds with lower < upper"},
+                   *lower, *upper);
   }
   axis.normalized = true;
   axis.key_lo = lo->key;
@@ -583,10 +601,20 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
 
   const auto lower = option(kLowerOption, "lower");
   const auto upper = option(kUpperOption, "upper");
+  bool normalized = false;
   for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
     Normalize(context, spec->axes[axis], axis,
               BoundComponent(lower, "lower", axis, options.dimensions),
               BoundComponent(upper, "upper", axis, options.dimensions));
+    normalized |= spec->axes[axis].normalized;
+  }
+  ReplaceOption(args[dimensions + kKindOption], duckdb::Value{curve});
+  ReplaceOption(
+    args[dimensions + kLevelStepOption],
+    duckdb::Value::INTEGER(static_cast<int32_t>(options.level_step)));
+  if (!normalized) {
+    ReplaceOption(args[dimensions + kLowerOption], duckdb::Value{});
+    ReplaceOption(args[dimensions + kUpperOption], duckdb::Value{});
   }
   return spec;
 }
