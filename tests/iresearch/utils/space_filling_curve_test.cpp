@@ -28,6 +28,107 @@ namespace {
 
 using namespace irs::curve;
 
+Code ReferenceEncode(Point point, uint32_t dimensions, bool hilbert) {
+  if (dimensions < 2 || dimensions > kMaxDimensions) {
+    throw std::invalid_argument("curve dimensions must be 2..8");
+  }
+  if (hilbert) {
+    for (uint64_t q = uint64_t{1} << 63; q > 1; q >>= 1) {
+      const auto mask = q - 1;
+      for (uint32_t axis = 0; axis < dimensions; ++axis) {
+        if (point[axis] & q) {
+          point[0] ^= mask;
+        } else {
+          const auto exchange = (point[0] ^ point[axis]) & mask;
+          point[0] ^= exchange;
+          point[axis] ^= exchange;
+        }
+      }
+    }
+    for (uint32_t axis = 1; axis < dimensions; ++axis) {
+      point[axis] ^= point[axis - 1];
+    }
+    uint64_t correction = 0;
+    for (uint64_t q = uint64_t{1} << 63; q > 1; q >>= 1) {
+      if (point[dimensions - 1] & q) {
+        correction ^= q - 1;
+      }
+    }
+    for (uint32_t axis = 0; axis < dimensions; ++axis) {
+      point[axis] ^= correction;
+    }
+  }
+  Code code;
+  code.fill(0);
+  for (uint32_t bit = 0; bit < 64; ++bit) {
+    for (uint32_t axis = 0; axis < dimensions; ++axis) {
+      const auto offset = bit * dimensions + axis;
+      const auto value = (point[axis] >> (63 - bit)) & 1;
+      code[offset / 8] |= static_cast<uint8_t>(value << (7 - offset % 8));
+    }
+  }
+  return code;
+}
+
+std::string ReferenceTerm(const Code& code, uint32_t dimensions, uint32_t level,
+                          char kind) {
+  const auto bits = dimensions * level;
+  std::string term(3 + (bits + 7) / 8, '\0');
+  term[0] = kind;
+  term[1] = static_cast<char>(dimensions);
+  term[2] = static_cast<char>(level);
+  for (uint32_t bit = 0; bit < bits; ++bit) {
+    const auto value = (code[bit / 8] >> (7 - bit % 8)) & 1;
+    term[3 + bit / 8] |= static_cast<char>(value << (7 - bit % 8));
+  }
+  return term;
+}
+
+std::vector<std::string> ReferencePointTerms(const Point& point,
+                                             const Options& options) {
+  const auto code = ReferenceEncode(point, options.dimensions, options.hilbert);
+  std::vector<std::string> terms;
+  for (uint32_t level = 0; level <= options.max_level; ++level) {
+    if (level == options.max_level || level % options.level_step == 0) {
+      terms.push_back(
+        ReferenceTerm(code, options.dimensions, level,
+                      level == options.max_level ? kLeafTerm : kAncestorTerm));
+    }
+  }
+  return terms;
+}
+
+std::vector<Point> EdgePoints(uint32_t dimensions) {
+  std::vector<Point> points;
+  for (uint64_t value :
+       {uint64_t{0}, UINT64_MAX, uint64_t{1}, UINT64_MAX - 1, uint64_t{1} << 63,
+        (uint64_t{1} << 63) - 1, uint64_t{0xaaaaaaaaaaaaaaaa},
+        uint64_t{0x5555555555555555}}) {
+    Point point;
+    point.fill(value);
+    points.push_back(point);
+  }
+  Point alternating;
+  for (uint32_t axis = 0; axis < kMaxDimensions; ++axis) {
+    alternating[axis] = axis % 2 ? 0xaaaaaaaaaaaaaaaa : 0x5555555555555555;
+  }
+  points.push_back(alternating);
+  for (uint32_t bit = 0; bit < 64; ++bit) {
+    Point point;
+    point.fill(uint64_t{1} << bit);
+    points.push_back(point);
+    for (uint32_t axis = 0; axis < dimensions; ++axis) {
+      point.fill(0);
+      point[axis] = uint64_t{1} << bit;
+      points.push_back(point);
+      point.fill(UINT64_MAX);
+      point[axis] ^= uint64_t{1} << bit;
+      points.push_back(point);
+    }
+  }
+  return points;
+}
+
 bool Match(const std::vector<std::string>& indexed,
            const std::vector<std::string>& query) {
   for (const auto& term : indexed) {
@@ -45,6 +146,61 @@ std::vector<std::string> IndexedPoint(const Point& point,
     terms.emplace_back(term.begin(), term.end());
   });
   return terms;
+}
+
+TEST(SpaceFillingCurve, EncodeMatchesBitwiseReference) {
+  std::mt19937_64 random{8137109};
+  for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
+    SCOPED_TRACE(dimensions);
+    const auto edges = EdgePoints(dimensions);
+    for (bool hilbert : {false, true}) {
+      SCOPED_TRACE(hilbert);
+      for (const auto& point : edges) {
+        ASSERT_EQ(Encode(point, dimensions, hilbert),
+                  ReferenceEncode(point, dimensions, hilbert));
+      }
+      for (uint32_t sample = 0; sample < 100000; ++sample) {
+        Point point;
+        for (auto& coordinate : point) {
+          coordinate = random();
+        }
+        ASSERT_EQ(Encode(point, dimensions, hilbert),
+                  ReferenceEncode(point, dimensions, hilbert));
+      }
+    }
+  }
+}
+
+TEST(SpaceFillingCurve, PointTermsMatchBitwiseReference) {
+  std::mt19937_64 random{641917};
+  for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
+    SCOPED_TRACE(dimensions);
+    for (bool hilbert : {false, true}) {
+      SCOPED_TRACE(hilbert);
+      for (uint32_t max_level = 0; max_level <= kMaxLevel; ++max_level) {
+        SCOPED_TRACE(max_level);
+        for (uint32_t step = 1; step <= MaxLevelStep(dimensions); ++step) {
+          SCOPED_TRACE(step);
+          const Options options{.dimensions = dimensions,
+                                .max_level = max_level,
+                                .hilbert = hilbert,
+                                .level_step = step};
+          for (uint32_t sample = 0; sample < 4; ++sample) {
+            Point point;
+            for (uint32_t axis = 0; axis < kMaxDimensions; ++axis) {
+              point[axis] = sample == 0   ? 0
+                            : sample == 1 ? UINT64_MAX
+                            : sample == 2 ? (axis % 2 ? 0xaaaaaaaaaaaaaaaa
+                                                      : 0x5555555555555555)
+                                          : random();
+            }
+            ASSERT_EQ(IndexedPoint(point, options),
+                      ReferencePointTerms(point, options));
+          }
+        }
+      }
+    }
+  }
 }
 
 TEST(SpaceFillingCurve, OrderedNumbers) {
@@ -228,6 +384,12 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
 }
 
 TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
+  for (uint32_t dimensions :
+       {uint32_t{0}, uint32_t{1}, uint32_t{9}, UINT32_MAX}) {
+    for (bool hilbert : {false, true}) {
+      EXPECT_THROW(Encode({}, dimensions, hilbert), std::invalid_argument);
+    }
+  }
   EXPECT_THROW(CoverBox({}, Options{.dimensions = 1}), std::invalid_argument);
   EXPECT_THROW(CoverBox({}, Options{.dimensions = 9}), std::invalid_argument);
   EXPECT_THROW(CoverBox({}, Options{.max_level = 65}), std::invalid_argument);

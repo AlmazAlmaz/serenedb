@@ -33,6 +33,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__BMI2__)
+#include <immintrin.h>
+#endif
+
 namespace irs::curve {
 
 inline constexpr uint32_t kMaxDimensions = 8;
@@ -208,46 +212,136 @@ inline std::vector<Cell> CoverBox(const Box& box, const Options& options) {
   });
 }
 
-inline Code Encode(Point point, uint32_t dimensions, bool hilbert) {
-  if (dimensions < 2 || dimensions > kMaxDimensions) {
-    throw std::invalid_argument("curve dimensions must be 2..8");
+namespace detail {
+
+template<uint32_t Dimensions>
+inline constexpr auto kSpreadBytes = [] {
+  std::array<uint64_t, 256> table;
+  table.fill(0);
+  for (uint32_t value = 0; value < table.size(); ++value) {
+    for (uint32_t bit = 0; bit < 8; ++bit) {
+      table[value] |= uint64_t{(value >> bit) & 1} << (bit * Dimensions);
+    }
   }
+  return table;
+}();
+
+inline uint64_t SpreadPairs(uint64_t value) noexcept {
+  value &= 0xffffffff;
+  value = (value | (value << 16)) & 0x0000ffff0000ffff;
+  value = (value | (value << 8)) & 0x00ff00ff00ff00ff;
+  value = (value | (value << 4)) & 0x0f0f0f0f0f0f0f0f;
+  value = (value | (value << 2)) & 0x3333333333333333;
+  return (value | (value << 1)) & 0x5555555555555555;
+}
+
+template<uint32_t Dimensions>
+Code Encode(Point& point, bool hilbert) {
   if (hilbert) {
     for (uint64_t q = uint64_t{1} << 63; q > 1; q >>= 1) {
       const auto mask = q - 1;
-      for (uint32_t axis = 0; axis < dimensions; ++axis) {
-        if (point[axis] & q) {
-          point[0] ^= mask;
-        } else {
-          const auto exchange = (point[0] ^ point[axis]) & mask;
-          point[0] ^= exchange;
-          point[axis] ^= exchange;
-        }
+      auto first = point[0] ^ (mask & (uint64_t{0} - bool(point[0] & q)));
+      for (uint32_t axis = 1; axis < Dimensions; ++axis) {
+        const auto invert = uint64_t{0} - bool(point[axis] & q);
+        const auto exchange = (first ^ point[axis]) & mask & ~invert;
+        first ^= exchange ^ (mask & invert);
+        point[axis] ^= exchange;
       }
+      point[0] = first;
     }
-    for (uint32_t axis = 1; axis < dimensions; ++axis) {
+    for (uint32_t axis = 1; axis < Dimensions; ++axis) {
       point[axis] ^= point[axis - 1];
     }
-    uint64_t correction = 0;
-    for (uint64_t q = uint64_t{1} << 63; q > 1; q >>= 1) {
-      if (point[dimensions - 1] & q) {
-        correction ^= q - 1;
-      }
-    }
-    for (uint32_t axis = 0; axis < dimensions; ++axis) {
+    auto correction = point[Dimensions - 1];
+    correction ^= correction >> 1;
+    correction ^= correction >> 2;
+    correction ^= correction >> 4;
+    correction ^= correction >> 8;
+    correction ^= correction >> 16;
+    correction ^= correction >> 32;
+    correction >>= 1;
+    for (uint32_t axis = 0; axis < Dimensions; ++axis) {
       point[axis] ^= correction;
     }
   }
   Code code;
   code.fill(0);
-  for (uint32_t bit = 0; bit < 64; ++bit) {
-    for (uint32_t axis = 0; axis < dimensions; ++axis) {
-      const auto offset = bit * dimensions + axis;
-      const auto value = (point[axis] >> (63 - bit)) & 1;
-      code[offset / 8] |= static_cast<uint8_t>(value << (7 - offset % 8));
+#if defined(__BMI2__)
+  static constexpr auto masks = [] {
+    std::array<std::array<uint64_t, Dimensions>, Dimensions> result;
+    for (uint32_t word = 0; word < Dimensions; ++word) {
+      result[word].fill(0);
+      for (uint32_t bit = 0; bit < 64; ++bit) {
+        result[word][(word * 64 + bit) % Dimensions] |= uint64_t{1}
+                                                        << (63 - bit);
+      }
+    }
+    return result;
+  }();
+  for (uint32_t word = 0; word < Dimensions; ++word) {
+    uint64_t value = 0;
+    for (uint32_t axis = 0; axis < Dimensions; ++axis) {
+      const auto shift =
+        64 - (64 * (word + 1) + Dimensions - 1 - axis) / Dimensions;
+      value |= _pdep_u64(point[axis] >> shift, masks[word][axis]);
+    }
+    if constexpr (std::endian::native == std::endian::little) {
+      value = std::byteswap(value);
+    }
+    std::memcpy(code.data() + word * 8, &value, sizeof(value));
+  }
+#else
+  if constexpr (Dimensions == 2) {
+    for (uint32_t word = 0; word < 2; ++word) {
+      const auto shift = (1 - word) * 32;
+      auto value =
+        (SpreadPairs(point[0] >> shift) << 1) | SpreadPairs(point[1] >> shift);
+      if constexpr (std::endian::native == std::endian::little) {
+        value = std::byteswap(value);
+      }
+      std::memcpy(code.data() + word * 8, &value, sizeof(value));
+    }
+  } else {
+    for (uint32_t byte = 0; byte < 8; ++byte) {
+      uint64_t value = 0;
+      for (uint32_t axis = 0; axis < Dimensions; ++axis) {
+        value |= kSpreadBytes<Dimensions>[static_cast<uint8_t>(point[axis] >>
+                                                               (56 - byte * 8))]
+                 << (Dimensions - 1 - axis);
+      }
+      if constexpr (std::endian::native == std::endian::little) {
+        value = std::byteswap(value);
+      }
+      std::memcpy(code.data() + byte * Dimensions,
+                  reinterpret_cast<const uint8_t*>(&value) + 8 - Dimensions,
+                  Dimensions);
     }
   }
+#endif
   return code;
+}
+
+}  // namespace detail
+
+inline Code Encode(Point point, uint32_t dimensions, bool hilbert) {
+  switch (dimensions) {
+    case 2:
+      return detail::Encode<2>(point, hilbert);
+    case 3:
+      return detail::Encode<3>(point, hilbert);
+    case 4:
+      return detail::Encode<4>(point, hilbert);
+    case 5:
+      return detail::Encode<5>(point, hilbert);
+    case 6:
+      return detail::Encode<6>(point, hilbert);
+    case 7:
+      return detail::Encode<7>(point, hilbert);
+    case 8:
+      return detail::Encode<8>(point, hilbert);
+    default:
+      throw std::invalid_argument("curve dimensions must be 2..8");
+  }
 }
 
 inline uint32_t TermSize(uint32_t dimensions, uint32_t level) noexcept {
@@ -276,19 +370,36 @@ inline std::string Term(const Code& code, uint32_t dimensions, uint32_t level,
   return term;
 }
 
+namespace detail {
+
+template<typename Emit>
+void EmitTerm(uint8_t* term, uint32_t dimensions, uint32_t level, char kind,
+              Emit& emit) {
+  const auto bits = dimensions * level;
+  const auto size = TermSize(dimensions, level);
+  term[0] = static_cast<uint8_t>(kind);
+  term[2] = static_cast<uint8_t>(level);
+  const auto last = term[size - 1];
+  term[size - 1] &= static_cast<uint8_t>(0xff << ((8 - bits % 8) % 8));
+  emit(std::span<const uint8_t>{term, size});
+  term[size - 1] = last;
+}
+
+}  // namespace detail
+
 template<typename Emit>
 void PointTerms(const Point& point, const Options& options, Emit&& emit) {
   const auto code = Encode(point, options.dimensions, options.hilbert);
   std::array<uint8_t, kTermHeader + sizeof(Code)> term;
-  for (uint32_t level = 0; level <= options.max_level; ++level) {
-    if (!IsIndexedLevel(level, options)) {
-      continue;
-    }
-    const auto kind = level == options.max_level ? kLeafTerm : kAncestorTerm;
-    emit(std::span<const uint8_t>{
-      term.data(),
-      WriteTerm(term.data(), code, options.dimensions, level, kind)});
+  term[1] = static_cast<uint8_t>(options.dimensions);
+  std::memcpy(term.data() + kTermHeader, code.data(), code.size());
+  for (uint32_t level = 0; level < options.max_level;
+       level += options.level_step) {
+    detail::EmitTerm(term.data(), options.dimensions, level, kAncestorTerm,
+                     emit);
   }
+  detail::EmitTerm(term.data(), options.dimensions, options.max_level,
+                   kLeafTerm, emit);
 }
 
 inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
