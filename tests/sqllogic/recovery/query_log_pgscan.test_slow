@@ -45,8 +45,4 @@ n
 
 
 statement ok
-RESET logging_level;
-
-
-statement ok
 DETACH pqlog_${__DATABASE__};

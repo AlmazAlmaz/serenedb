@@ -47,8 +47,4 @@ n
 
 
 statement ok
-RESET logging_level;
-
-
-statement ok
 DETACH chlog;
