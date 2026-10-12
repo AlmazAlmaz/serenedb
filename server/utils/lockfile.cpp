@@ -94,8 +94,8 @@ absl::Status CreateLockFile(const char* filename) {
   lock.l_type = F_WRLCK;
   lock.l_whence = SEEK_SET;
   if (fcntl(fd, F_SETLK, &lock) == -1) {
-    auto status = absl::InternalError(absl::StrCat(
-      "cannot lock lockfile '", filename, "': ", strerror(errno)));
+    auto status = absl::InternalError(
+      absl::StrCat("cannot lock lockfile '", filename, "': ", strerror(errno)));
     SERENEDB_CLOSE(fd);
     std::error_code ec;
     std::filesystem::remove(filename, ec);
@@ -114,9 +114,9 @@ absl::Status VerifyLockFile(const char* filename) {
 
   int fd = SERENEDB_OPEN(filename, O_RDWR | SERENEDB_O_CLOEXEC);
   if (fd < 0) {
-    return absl::InternalError(absl::StrCat("cannot open lockfile '", filename,
-                                            "' in write mode: ",
-                                            strerror(errno)));
+    return absl::InternalError(
+      absl::StrCat("cannot open lockfile '", filename,
+                   "' in write mode: ", strerror(errno)));
   }
   absl::Cleanup sg = [&]() noexcept { SERENEDB_CLOSE(fd); };
 

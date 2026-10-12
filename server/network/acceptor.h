@@ -96,9 +96,8 @@ class Acceptor final : public AcceptorBase,
       _acceptor.bind(bind);
       ListenWith(opts);
       if (!abstract) {
-        if (opts.unix_mode &&
-            ::chmod(path.c_str(), static_cast<::mode_t>(*opts.unix_mode)) !=
-              0) {
+        if (opts.unix_mode && ::chmod(path.c_str(), static_cast<::mode_t>(
+                                                      *opts.unix_mode)) != 0) {
           SDB_FATAL(GENERAL, "cannot chmod unix socket '", path,
                     "': ", std::strerror(errno));
         }
@@ -189,8 +188,7 @@ class Acceptor final : public AcceptorBase,
     bool accept_failing = false;
     while (_running) {
       auto connection = duckdb::make_shared_ptr<Session>(_deps, _pool.Next());
-      if (const auto ec =
-            co_await AcceptInto(connection->Lowest()).NoThrow()) {
+      if (const auto ec = co_await AcceptInto(connection->Lowest()).NoThrow()) {
         // Accept failed: either a clean shutdown closed the acceptor, or a
         // transient error (e.g. fd exhaustion) -- drop this attempt and retry.
         if (!_running) {

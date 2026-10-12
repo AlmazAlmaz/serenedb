@@ -239,8 +239,8 @@ void Config::RestoreValue(std::string_view key, duckdb::Value value) noexcept {
         ext.setting_index.GetIndex(), std::move(typed));
     }
   } catch (const std::exception& e) {
-    _client_ctx.WarnUser(absl::StrCat("could not restore setting \"", key,
-                                      "\": ", e.what()));
+    _client_ctx.WarnUser(
+      absl::StrCat("could not restore setting \"", key, "\": ", e.what()));
   }
 }
 

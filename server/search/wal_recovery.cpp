@@ -171,8 +171,7 @@ void InitInvertedIndexes() {
   }
   const auto duration =
     absl::FromChrono(std::chrono::steady_clock::now() - begin);
-  if (const auto count = replayed.load(std::memory_order_relaxed);
-      count != 0) {
+  if (const auto count = replayed.load(std::memory_order_relaxed); count != 0) {
     SDB_INFO(SEARCH, "search index recovery: replayed the WAL into ", count,
              " of ", recovering.size(), " inverted index(es) in ",
              absl::FormatDuration(duration));

@@ -634,12 +634,11 @@ std::vector<std::string_view> Views(const std::vector<std::string>& in) {
 void Replace(irs::IndexWriter& writer, const std::vector<std::string>& replaced,
              const std::vector<std::string>& adopted,
              irs::IndexWriter::QueryContext::FilterPtr removal = nullptr) {
-  writer.ReplaceSegments(
-    Views(replaced), Views(adopted),
-    [&](irs::IndexWriter::QueryContext::FilterPtr& out) {
-      out = std::move(removal);
-      return true;
-    });
+  writer.ReplaceSegments(Views(replaced), Views(adopted),
+                         [&](irs::IndexWriter::QueryContext::FilterPtr& out) {
+                           out = std::move(removal);
+                           return true;
+                         });
 }
 
 }  // namespace

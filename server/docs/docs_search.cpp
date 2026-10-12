@@ -38,7 +38,6 @@
 #include <iresearch/analysis/keyword_tokenizer.hpp>
 #include <iresearch/analysis/text_tokenizer.hpp>
 #include <iresearch/analysis/token_sinks.hpp>
-#include <iresearch/error/error.hpp>
 #include <iresearch/formats/column/column_reader.hpp>
 #include <iresearch/formats/column/read_context.hpp>
 #include <iresearch/index/index_reader_options.hpp>
@@ -205,12 +204,12 @@ class SpanDirectory final : public irs::Directory {
                 const irs::ResourceManagementOptions& resource_manager) noexcept
     : Directory{resource_manager}, _files{files} {}
 
-  irs::IndexInput::ptr open(std::string_view name,
-                            irs::IOAdvice) const final {
+  irs::IndexInput::ptr open(std::string_view name, irs::IOAdvice) const final {
     const auto* file = Find(name);
     if (!file) {
-      throw irs::IoError{absl::StrCat("Failed to open file '", name,
-                                      "': No such file or directory")};
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_UNDEFINED_FILE),
+                      ERR_MSG("could not open file \"", name,
+                              "\" of the documentation index: no such file"));
     }
     return std::make_unique<irs::BytesViewInput>(
       irs::bytes_view{file->bytes.data(), file->bytes.size()});
@@ -238,8 +237,9 @@ class SpanDirectory final : public irs::Directory {
   irs::DirectoryAttributes& attributes() noexcept final { return _attributes; }
 
   irs::IndexOutput::ptr create(std::string_view name) final {
-    throw irs::IoError{absl::StrCat("Failed to create file '", name,
-                                    "': the documentation index is read-only")};
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
+                    ERR_MSG("could not create file \"", name,
+                            "\": the documentation index is read-only"));
   }
 
   irs::IndexLock::ptr make_lock(std::string_view) noexcept final {

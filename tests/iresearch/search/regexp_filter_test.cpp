@@ -1537,9 +1537,8 @@ TEST_P(RegexpFilterTestCase, by_regexp_syntax_posix_rejects_perl_class) {
   }
   auto rdr = open_reader();
   auto q = MakeFilter("class", "\\w+", irs::RegexpSyntax::PosixEre);
-  ASSERT_THROW(
-    CheckQuery(*OptimizedMove(std::move(q)), Docs{}, Costs{0}, rdr),
-    irs::SqlException);
+  ASSERT_THROW(CheckQuery(*OptimizedMove(std::move(q)), Docs{}, Costs{0}, rdr),
+               irs::SqlException);
 }
 
 TEST_P(RegexpFilterTestCase, by_regexp_syntax_posix_accepts_posix_class) {
