@@ -70,6 +70,23 @@ bool IsUnsigned(duckdb::LogicalTypeId type) {
          type == UBIGINT;
 }
 
+std::pair<uint64_t, uint64_t> CoordinateLimits(duckdb::LogicalTypeId type) {
+  using enum duckdb::LogicalTypeId;
+  if (type == FLOAT || type == DOUBLE) {
+    return {irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
+            irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN())};
+  }
+  const auto width = type == DATE ? 32 : IntegerWidth(type);
+  if (width == 0 || width == 64) {
+    return {0, std::numeric_limits<uint64_t>::max()};
+  }
+  if (IsUnsigned(type)) {
+    return {0, (uint64_t{1} << width) - 1};
+  }
+  const auto half = uint64_t{1} << (width - 1);
+  return {irs::curve::kSignBit - half, irs::curve::kSignBit + half - 1};
+}
+
 bool IsWideningCast(const duckdb::Expression& expression) {
   if (!duckdb::BoundCastExpression::IsCast(expression)) {
     return false;
@@ -145,19 +162,23 @@ void CollectRanges(const duckdb::Expression& expression,
       expression.HasParameter()) {
     return;
   }
-  const auto add = [&](const duckdb::Expression& component,
-                       const duckdb::Expression* lower,
-                       const duckdb::Expression* upper) {
-    if (auto normalized = normalize(PeelCast(component))) {
-      ranges.push_back({std::move(normalized), lower, upper});
-    }
-  };
+  const auto add =
+    [&](const duckdb::Expression& component, const duckdb::Expression* lower,
+        const duckdb::Expression* upper, bool lower_inclusive = true,
+        bool upper_inclusive = true) {
+      if (auto normalized = normalize(PeelCast(component))) {
+        ranges.push_back({std::move(normalized), lower, upper, lower_inclusive,
+                          upper_inclusive});
+      }
+    };
   const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
   if (expression.GetExpressionType() == COMPARE_BETWEEN) {
     if (duckdb::BoundBetweenExpression::HasValidBindData(function)) {
       add(duckdb::BoundBetweenExpression::Input(function),
           &duckdb::BoundBetweenExpression::LowerBound(function),
-          &duckdb::BoundBetweenExpression::UpperBound(function));
+          &duckdb::BoundBetweenExpression::UpperBound(function),
+          duckdb::BoundBetweenExpression::LowerInclusive(function),
+          duckdb::BoundBetweenExpression::UpperInclusive(function));
     }
     return;
   }
@@ -173,13 +194,17 @@ void CollectRanges(const duckdb::Expression& expression,
       break;
     case COMPARE_GREATERTHAN:
     case COMPARE_GREATERTHANOREQUALTO:
-      add(left, &right, nullptr);
-      add(right, nullptr, &left);
+      add(left, &right, nullptr,
+          expression.GetExpressionType() == COMPARE_GREATERTHANOREQUALTO);
+      add(right, nullptr, &left, true,
+          expression.GetExpressionType() == COMPARE_GREATERTHANOREQUALTO);
       break;
     case COMPARE_LESSTHAN:
     case COMPARE_LESSTHANOREQUALTO:
-      add(left, nullptr, &right);
-      add(right, &left, nullptr);
+      add(left, nullptr, &right, true,
+          expression.GetExpressionType() == COMPARE_LESSTHANOREQUALTO);
+      add(right, &left, nullptr,
+          expression.GetExpressionType() == COMPARE_LESSTHANOREQUALTO);
       break;
     default:
       break;
@@ -263,10 +288,13 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
     return false;
   }
   irs::curve::Box box;
+  bool empty = false;
   for (uint32_t axis = 0; axis < dimensions; ++axis) {
     bool has_lower = false;
     bool has_upper = false;
-    box.max[axis] = std::numeric_limits<uint64_t>::max();
+    const auto& coordinate =
+      duckdb::StructType::GetChildTypes(info.logical_type)[axis].second;
+    std::tie(box.min[axis], box.max[axis]) = CoordinateLimits(coordinate.id());
     for (const auto& range : ranges) {
       auto* component = &PeelCast(*range.component);
       const auto& indexed = PeelCast(*components[axis]);
@@ -285,20 +313,32 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
           (range.upper && !Fold(context, *range.upper, upper_values[axis]))) {
         continue;
       }
-      const auto& coordinate =
-        duckdb::StructType::GetChildTypes(info.logical_type)[axis].second;
       if (!CurveBoundFits(coordinate, lower_values[axis].type()) ||
           !CurveBoundFits(coordinate, upper_values[axis].type())) {
         continue;
       }
       const auto lower = duckdb::Value::TUPLE(std::move(lower_values));
       const auto upper = duckdb::Value::TUPLE(std::move(upper_values));
-      const auto limits = CurveBox(info.logical_type, lower, upper);
+      auto limits = CurveBox(info.logical_type, lower, upper);
       if (range.lower) {
+        if (!range.lower_inclusive) {
+          if (limits.min[axis] == std::numeric_limits<uint64_t>::max()) {
+            empty = true;
+          } else {
+            ++limits.min[axis];
+          }
+        }
         box.min[axis] = std::max(box.min[axis], limits.min[axis]);
         has_lower = true;
       }
       if (range.upper) {
+        if (!range.upper_inclusive) {
+          if (limits.max[axis] == 0) {
+            empty = true;
+          } else {
+            --limits.max[axis];
+          }
+        }
         box.max[axis] = std::min(box.max[axis], limits.max[axis]);
         has_upper = true;
       }
@@ -306,6 +346,10 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
     if (!has_lower || !has_upper) {
       return false;
     }
+  }
+  if (empty) {
+    root.Add(std::make_unique<irs::Empty>(), irs::Occur::Must);
+    return true;
   }
   AddBoxCandidates(root, info, box);
   return true;

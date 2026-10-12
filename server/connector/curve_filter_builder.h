@@ -36,6 +36,8 @@ struct CurveRange {
   duckdb::unique_ptr<duckdb::Expression> component;
   const duckdb::Expression* lower;
   const duckdb::Expression* upper;
+  bool lower_inclusive;
+  bool upper_inclusive;
 };
 
 std::vector<CurveRange> CollectCurveRanges(
