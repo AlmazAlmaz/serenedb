@@ -102,11 +102,16 @@ sql "INSERT INTO ind SELECT i, ((i*48271)%${X_MOD})::DOUBLE/${SCALE},
 sql "CREATE TABLE cor(id BIGINT PRIMARY KEY, x DOUBLE, y DOUBLE, z DOUBLE)"
 sql "INSERT INTO cor SELECT id, x, x+(id%7-3)*0.1, x+(id%11-5)*0.1 FROM ind"
 
+CURVE="curve(x, y, z)"
+CURVE32="curve(x, y, z, max_level := 32)"
+NORM32="curve(x, y, z, max_level := 32, lower := ROW(-1, -1, -1), upper := ROW(1001, 1001, 1001))"
+
 for t in ind cor; do
 	g=$(seconds "CREATE INDEX ${t}_granular ON ${t} USING inverted(id, x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
-	c=$(seconds "CREATE INDEX ${t}_curve ON ${t} USING inverted(id, (ROW(x, y, z)) curve()) INCLUDE (x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
-	d=$(seconds "CREATE INDEX ${t}_curve32 ON ${t} USING inverted(id, (ROW(x, y, z)) curve(max_level=32)) INCLUDE (x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
-	echo "build ${t}: granular ${g} s, curve ${c} s, curve max_level=32 ${d} s"
+	c=$(seconds "CREATE INDEX ${t}_curve ON ${t} USING inverted(id, (${CURVE})) INCLUDE (x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
+	d=$(seconds "CREATE INDEX ${t}_curve32 ON ${t} USING inverted(id, (${CURVE32})) INCLUDE (x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
+	n=$(seconds "CREATE INDEX ${t}_norm32 ON ${t} USING inverted(id, (${NORM32})) INCLUDE (x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
+	echo "build ${t}: granular ${g} s, curve ${c} s, curve max_level=32 ${d} s, normalized max_level=32 ${n} s"
 done
 
 for t in ind cor; do
@@ -114,27 +119,29 @@ for t in ind cor; do
 		lo=$(awk -v h="${half}" 'BEGIN {print 500 - h}')
 		hi=$(awk -v h="${half}" 'BEGIN {print 500 + h}')
 		between="x BETWEEN ${lo} AND ${hi} AND y BETWEEN ${lo} AND ${hi} AND z BETWEEN ${lo} AND ${hi}"
-		box="sdb_box_contains(ROW(x, y, z), ROW(${lo}::DOUBLE, ${lo}::DOUBLE, ${lo}::DOUBLE), ROW(${hi}::DOUBLE, ${hi}::DOUBLE, ${hi}::DOUBLE))"
+		box="ts_between(ROW(${lo}, ${lo}, ${lo}), ROW(${hi}, ${hi}, ${hi}), true, true)"
 		s="FROM ${t} WHERE ${between}"
 		g="FROM ${t}_granular WHERE ${between}"
-		c="FROM ${t}_curve WHERE ${box}"
-		d="FROM ${t}_curve32 WHERE ${box}"
-		rows=$(check "${s}" "${g}" "${c}" "${d}")
-		echo "query ${t} box ±${half}: rows ${rows}, max(id) ms table $(median_ms "SELECT max(id) ${s}") granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}") curve max_level=32 $(median_ms "SELECT max(id) ${d}")"
+		c="FROM ${t}_curve WHERE ${CURVE} @@ ${box}"
+		d="FROM ${t}_curve32 WHERE ${CURVE32} @@ ${box}"
+		n="FROM ${t}_norm32 WHERE ${NORM32} @@ ${box}"
+		rows=$(check "${s}" "${g}" "${c}" "${d}" "${n}")
+		echo "query ${t} box ±${half}: rows ${rows}, max(id) ms table $(median_ms "SELECT max(id) ${s}") granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}") curve max_level=32 $(median_ms "SELECT max(id) ${d}") normalized max_level=32 $(median_ms "SELECT max(id) ${n}")"
 	done
-	box="sdb_box_contains(ROW(x, y, z), ROW(495::DOUBLE, NULL, NULL), ROW(505::DOUBLE, NULL, NULL))"
+	box="ts_between(ROW(495, NULL, NULL), ROW(505, NULL, NULL), true, true)"
 	s="FROM ${t} WHERE x BETWEEN 495 AND 505"
 	g="FROM ${t}_granular WHERE x BETWEEN 495 AND 505"
-	c="FROM ${t}_curve WHERE ${box}"
-	d="FROM ${t}_curve32 WHERE ${box}"
-	rows=$(check "${s}" "${g}" "${c}" "${d}")
-	echo "query ${t} one axis: rows ${rows}, max(id) ms table $(median_ms "SELECT max(id) ${s}") granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}") curve max_level=32 $(median_ms "SELECT max(id) ${d}")"
+	c="FROM ${t}_curve WHERE ${CURVE} @@ ${box}"
+	d="FROM ${t}_curve32 WHERE ${CURVE32} @@ ${box}"
+	n="FROM ${t}_norm32 WHERE ${NORM32} @@ ${box}"
+	rows=$(check "${s}" "${g}" "${c}" "${d}" "${n}")
+	echo "query ${t} one axis: rows ${rows}, max(id) ms table $(median_ms "SELECT max(id) ${s}") granular $(median_ms "SELECT max(id) ${g}") curve $(median_ms "SELECT max(id) ${c}") curve max_level=32 $(median_ms "SELECT max(id) ${d}") normalized max_level=32 $(median_ms "SELECT max(id) ${n}")"
 done
 
 for t in ind cor; do
 	sql "VACUUM (COMPACT_TABLE) ${t}" >/dev/null
 done
-for index in ind_granular ind_curve ind_curve32 cor_granular cor_curve cor_curve32; do
+for index in ind_granular ind_curve ind_curve32 ind_norm32 cor_granular cor_curve cor_curve32 cor_norm32; do
 	size=$(sql "SELECT round(m.value / 1048576.0)::BIGINT FROM sdb_metrics m JOIN pg_class c ON c.oid = m.relation_id
 		WHERE c.relname = '${index}' AND m.metric = 'index_size'")
 	echo "size ${index}: ${size} MB"
