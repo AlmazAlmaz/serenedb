@@ -759,11 +759,14 @@ launch_kev() {
 	echo
 }
 
-# Launches a postgres 16 container, used by tests that ATTACH a real postgres
-# via the postgres_scanner DuckDB extension (filename suffix `_pgscan.`). Trust
-# auth + a single postgres role; per-test database scoping is the test's
-# responsibility (`CREATE DATABASE` / `ATTACH ... TYPE postgres`).
 launch_postgres() {
+	if [[ -n "${PGHOST:-}" && -n "${PGPORT:-}" ]]; then
+		echo "Using existing postgres at ${PGHOST}:${PGPORT}."
+		export PGUSER="${PGUSER:-postgres}"
+		export PGDATABASE="${PGDATABASE:-postgres}"
+		return 0
+	fi
+
 	local prefix
 	prefix="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 4)"
 	POSTGRES_CONTAINER_NAME="${prefix}-serenedb-test-postgres-$$"
