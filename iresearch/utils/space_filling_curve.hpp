@@ -102,6 +102,22 @@ inline double DecodeDouble(uint64_t value) noexcept {
   return std::bit_cast<double>(value & kSignBit ? value ^ kSignBit : ~value);
 }
 
+inline uint64_t NormalizeKey(uint64_t key, uint64_t lo, uint64_t hi) noexcept {
+  return (std::clamp(key, lo, hi) - lo) << std::countl_zero(hi - lo);
+}
+
+inline uint64_t NormalizeDouble(double value, double lo, double hi) noexcept {
+  constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+  if (std::isnan(value) || value >= hi) {
+    return kMax;
+  }
+  if (!(value > lo)) {
+    return 0;
+  }
+  const auto fraction = (value - lo) / (hi - lo);
+  return fraction >= 1 ? kMax : static_cast<uint64_t>(std::ldexp(fraction, 64));
+}
+
 struct Box {
   Point min{};
   Point max{};
@@ -346,8 +362,12 @@ inline Code Encode(Point point, uint32_t dimensions, bool hilbert) {
   }
 }
 
+inline uint32_t CodeSize(uint32_t dimensions, uint32_t level) noexcept {
+  return (dimensions * level + 7) / 8;
+}
+
 inline uint32_t TermSize(uint32_t dimensions, uint32_t level) noexcept {
-  return kTermHeader + (dimensions * level + 7) / 8;
+  return kTermHeader + CodeSize(dimensions, level);
 }
 
 inline uint32_t WriteTerm(uint8_t* out, const Code& code, uint32_t dimensions,
@@ -389,9 +409,21 @@ void EmitTerm(uint8_t* term, uint32_t dimensions, uint32_t level, char kind,
 
 }  // namespace detail
 
-template<typename Emit>
-void PointTerms(const Point& point, const Options& options, Emit&& emit) {
+inline uint32_t LeafCode(const Point& point, const Options& options,
+                         uint8_t* out) noexcept {
   const auto code = Encode(point, options.dimensions, options.hilbert);
+  const auto bits = options.dimensions * options.max_level;
+  const auto size = CodeSize(options.dimensions, options.max_level);
+  std::memcpy(out, code.data(), size);
+  if (bits % 8) {
+    out[size - 1] &= static_cast<uint8_t>(0xff << (8 - bits % 8));
+  }
+  return size;
+}
+
+template<typename Emit>
+void CodeTerms(std::span<const uint8_t> code, const Options& options,
+               Emit&& emit) {
   std::array<uint8_t, kTermHeader + sizeof(Code)> term;
   term[1] = static_cast<uint8_t>(options.dimensions);
   std::memcpy(term.data() + kTermHeader, code.data(), code.size());
@@ -402,6 +434,13 @@ void PointTerms(const Point& point, const Options& options, Emit&& emit) {
   }
   detail::EmitTerm(term.data(), options.dimensions, options.max_level,
                    kLeafTerm, emit);
+}
+
+template<typename Emit>
+void PointTerms(const Point& point, const Options& options, Emit&& emit) {
+  Code code;
+  const auto size = LeafCode(point, options, code.data());
+  CodeTerms(std::span<const uint8_t>{code.data(), size}, options, emit);
 }
 
 inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,

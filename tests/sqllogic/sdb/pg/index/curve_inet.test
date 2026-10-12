@@ -1,0 +1,87 @@
+statement ok
+CREATE TABLE curve_hosts(id INTEGER PRIMARY KEY, ip INET, t TIMESTAMP);
+
+statement ok
+INSERT INTO curve_hosts SELECT i,
+ CASE WHEN i % 3 = 0 THEN ('10.' || (i % 7) || '.' || (i % 251) || '.' || (i % 13))::INET
+      WHEN i % 3 = 1 THEN ('2001:db8:' || (i % 9) || '::' || (i % 4093))::INET
+      ELSE ('192.168.' || (i % 5) || '.' || (i % 256) || '/' || (16 + i % 17))::INET END,
+ TIMESTAMP '2026-01-01' + INTERVAL (i) MINUTE
+FROM range(3000) t(i);
+
+statement ok
+INSERT INTO curve_hosts VALUES (3000, NULL, '2026-01-01'), (3001, '10.1.1.1', NULL), (3002, '::ffff:10.1.1.1', '2026-01-01 05:00');
+
+statement ok
+CREATE INDEX curve_hosts_idx ON curve_hosts USING inverted(id, (curve(ip, t))) INCLUDE (ip, t);
+
+statement ok
+CREATE INDEX curve_hosts_hilbert ON curve_hosts USING inverted(id, (curve(ip, t, kind := 'hilbert', max_cells := 8))) INCLUDE (ip, t);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_hosts;
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('10.2.0.0'::INET, TIMESTAMP '2026-01-01 10:00'), ROW('10.4.255.255'::INET, TIMESTAMP '2026-01-02'), true, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_hosts WHERE CASE WHEN ip > '10.4.255.255'::INET THEN false ELSE ip >= '10.2.0.0'::INET END
+   AND t BETWEEN TIMESTAMP '2026-01-01 10:00' AND TIMESTAMP '2026-01-02') AS ipv4,
+ (SELECT list(id ORDER BY id) FROM curve_hosts_hilbert WHERE curve(ip, t, kind := 'hilbert', max_cells := 8) @@ ts_between(
+   ROW('2001:db8:3::'::INET, NULL), ROW('2001:db8:5::ffff'::INET, NULL), true, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_hosts WHERE CASE WHEN ip > '2001:db8:5::ffff'::INET THEN false ELSE ip >= '2001:db8:3::'::INET END
+   AND t IS NOT NULL) AS ipv6,
+ (SELECT list(id ORDER BY id) FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('192.168.2.0'::INET, TIMESTAMP '2026-01-01'), ROW('2001:db8:2::'::INET, TIMESTAMP '2026-01-01 20:00'), false, false))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_hosts WHERE CASE WHEN ip >= '2001:db8:2::'::INET THEN false ELSE ip > '192.168.2.0'::INET END
+   AND t > TIMESTAMP '2026-01-01' AND t < TIMESTAMP '2026-01-01 20:00') AS mixed;
+----
+ipv4	ipv6	mixed
+t	t	t
+
+query
+SELECT
+ (SELECT count(*) FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('10.2.0.0'::INET, TIMESTAMP '2026-01-01 10:00'), ROW('10.4.255.255'::INET, TIMESTAMP '2026-01-02'), true, true)) > 0 AS ipv4,
+ (SELECT count(*) FROM curve_hosts_hilbert WHERE curve(ip, t, kind := 'hilbert', max_cells := 8) @@ ts_between(
+   ROW('2001:db8:3::'::INET, NULL), ROW('2001:db8:5::ffff'::INET, NULL), true, true)) > 0 AS ipv6,
+ (SELECT count(*) FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('192.168.2.0'::INET, TIMESTAMP '2026-01-01'), ROW('2001:db8:2::'::INET, TIMESTAMP '2026-01-01 20:00'), false, false)) > 0 AS mixed;
+----
+ipv4	ipv6	mixed
+t	t	t
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('192.168.1.0/24'::INET, NULL), ROW('192.168.1.255/32'::INET, NULL), true, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_hosts WHERE CASE WHEN ip > '192.168.1.255/32'::INET THEN false ELSE ip >= '192.168.1.0/24'::INET END
+   AND t IS NOT NULL) AS masks;
+----
+masks
+t
+
+query
+SELECT id FROM curve_hosts_idx WHERE curve(ip, t) @@ ts_between(
+ ROW('::ffff:10.1.1.1'::INET, NULL), ROW('::ffff:10.1.1.1'::INET, NULL), true, true);
+----
+id
+3002
+
+query
+SELECT ip FROM (VALUES ('2001:db8::1'::INET), ('10.0.0.2'::INET), ('::'::INET), ('10.0.0.1'::INET), ('255.255.255.255'::INET)) v(ip)
+ORDER BY curve(ip, 0);
+----
+ip
+10.0.0.1
+10.0.0.2
+255.255.255.255
+::
+2001:db8::1
+
+statement ok
+DROP TABLE curve_hosts;

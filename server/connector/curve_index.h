@@ -20,53 +20,74 @@
 
 #pragma once
 
+#include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/types/value.hpp>
-#include <duckdb/common/types/vector.hpp>
 #include <duckdb/common/vector/unified_vector_format.hpp>
+#include <duckdb/function/function.hpp>
 #include <iresearch/analysis/tokenizer.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
+#include <optional>
 
+namespace duckdb {
+
+class Expression;
+
+}  // namespace duckdb
 namespace sdb::connector {
 
-void ValidateCurveType(std::string_view label, const duckdb::LogicalType& type);
-bool CurveBoundFits(const duckdb::LogicalType& coordinate,
-                    const duckdb::LogicalType& bound) noexcept;
-void ValidateCurveBounds(const duckdb::LogicalType& point,
-                         const duckdb::LogicalType& lower,
-                         const duckdb::LogicalType& upper);
+inline constexpr std::string_view kCurveFunction = "curve";
 
-class CurveTuples {
- public:
-  CurveTuples(const duckdb::Vector& tuples, const duckdb::LogicalType& point);
-
-  bool IsValid(duckdb::idx_t row) const {
-    return _tuples.validity.RowIsValid(_tuples.sel->get_index(row));
-  }
-  bool IsValid(duckdb::idx_t row, uint32_t axis) const {
-    const auto& format = _axes[axis].format;
-    return format.validity.RowIsValid(format.sel->get_index(row));
-  }
-  uint64_t Get(duckdb::idx_t row, uint32_t axis) const;
-
- private:
-  struct Axis {
-    duckdb::UnifiedVectorFormat format;
-    duckdb::LogicalTypeId type = duckdb::LogicalTypeId::SQLNULL;
-    bool as_double = false;
-  };
-
-  duckdb::UnifiedVectorFormat _tuples;
-  std::array<Axis, irs::curve::kMaxDimensions> _axes;
+enum class CurveFamily : uint8_t {
+  Null,
+  Signed,
+  Unsigned,
+  Float,
+  Date,
+  Timestamp,
+  TimestampTz,
+  Inet,
 };
 
-irs::curve::Box CurveBox(const CurveTuples& lower, duckdb::idx_t lower_row,
-                         const CurveTuples& upper, duckdb::idx_t upper_row,
-                         uint32_t dimensions);
-irs::curve::Box CurveBox(const duckdb::LogicalType& point,
-                         const duckdb::Value& lower,
-                         const duckdb::Value& upper);
-void PackCurvePoints(const duckdb::Vector& points, duckdb::idx_t count,
-                     uint32_t dimensions, duckdb::Vector& packed);
+struct CurveKey {
+  uint64_t key = 0;
+  bool exact = false;
+};
+
+struct CurveAxis {
+  duckdb::LogicalType type;
+  CurveFamily family = CurveFamily::Null;
+  bool normalized = false;
+  uint64_t key_lo = 0;
+  uint64_t key_hi = 0;
+  double lo = 0;
+  double hi = 0;
+
+  bool Injective() const noexcept {
+    return !normalized && family != CurveFamily::Inet;
+  }
+  std::optional<CurveKey> BoundKey(const duckdb::Value& bound) const;
+  std::pair<uint64_t, uint64_t> Limits() const noexcept;
+
+  bool operator==(const CurveAxis&) const = default;
+};
+
+class CurveSpec final : public duckdb::FunctionData {
+ public:
+  irs::curve::Options options;
+  std::array<CurveAxis, irs::curve::kMaxDimensions> axes;
+
+  duckdb::unique_ptr<duckdb::FunctionData> Copy() const final;
+  bool Equals(const duckdb::FunctionData& other) const final;
+};
+
+duckdb::unique_ptr<CurveSpec> BindCurveSpec(
+  duckdb::ClientContext& context,
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& args);
+
+const CurveSpec* TryGetCurveSpec(const duckdb::Expression& expression);
+
+void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
+                      duckdb::Vector& result);
 
 class CurveTokenizer final
   : public irs::analysis::TypedTokenizer<CurveTokenizer> {
@@ -85,17 +106,20 @@ class CurveTokenizer final
 
   template<irs::TokenLayout Layout>
   bool DoFill(duckdb::string_t value, irs::TokenSink& sink) {
-    const std::string_view bytes{value.GetData(), value.GetSize()};
+    const std::span code{reinterpret_cast<const uint8_t*>(value.GetData()),
+                         value.GetSize()};
+    if (code.size() !=
+        irs::curve::CodeSize(_options.dimensions, _options.max_level)) {
+      return false;
+    }
     const auto emit = [&](std::span<const uint8_t> term) {
       sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
     };
-    irs::curve::PointTerms(UnpackPoint(bytes), _options, emit);
+    irs::curve::CodeTerms(code, _options, emit);
     return true;
   }
 
  private:
-  irs::curve::Point UnpackPoint(std::string_view bytes) const noexcept;
-
   irs::curve::Options _options;
 };
 
