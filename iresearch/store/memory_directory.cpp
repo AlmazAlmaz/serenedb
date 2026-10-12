@@ -28,10 +28,10 @@
 #include <algorithm>
 #include <cstring>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/utils/assert.hpp"
 #include "iresearch/utils/bytes_utils.hpp"
 #include "iresearch/utils/crc.hpp"
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 
 namespace irs {
 
@@ -325,8 +325,9 @@ IndexInput::ptr MemoryDirectory::open(std::string_view name,
   absl::ReaderMutexLock lock{&_flock};
   const auto it = _files.find(name);
   if (it == _files.end()) {
-    throw IoError{absl::StrCat("Failed to open file '", name,
-                               "': No such file or directory")};
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_UNDEFINED_FILE),
+      ERR_MSG("Failed to open file '", name, "': No such file or directory"));
   }
   return std::make_unique<MemoryIndexInput>(*it->second);
 }

@@ -27,9 +27,10 @@
 
 #include <cstring>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/utils/crc.hpp"
 #include "iresearch/utils/file_utils_ext.hpp"
+#include "iresearch/utils/pg/errcode_for_file_access.hpp"
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 
 namespace irs {
 namespace {
@@ -86,8 +87,13 @@ SegregatedBuffer::SegregatedBuffer() : _buffer{Allocate()} {
 class URing {
  public:
   URing(size_t queue_size, unsigned flags) {
-    if (io_uring_queue_init(queue_size, &ring, flags) != 0) {
-      throw NotSupported{};
+    if (const int ret = io_uring_queue_init(queue_size, &ring, flags);
+        ret != 0) {
+      THROW_SQL_ERROR(
+        ERR_CODE(-ret == ENOSYS || -ret == EPERM
+                   ? ERRCODE_FEATURE_NOT_SUPPORTED
+                   : ERRCODE_INSUFFICIENT_RESOURCES),
+        ERR_MSG("asynchronous I/O is not available: ", std::strerror(-ret)));
     }
   }
 
@@ -109,15 +115,19 @@ class URing {
 
 void URing::RegBuffer(byte_type* b, size_t size) {
   iovec iovec{.iov_base = b, .iov_len = size};
-  if (io_uring_register_buffers(&ring, &iovec, 1) != 0) {
-    throw IllegalState("failed to register buffer");
+  if (const int ret = io_uring_register_buffers(&ring, &iovec, 1); ret != 0) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INSUFFICIENT_RESOURCES),
+                    ERR_MSG("failed to register an asynchronous I/O buffer: ",
+                            std::strerror(-ret)));
   }
 }
 
 void URing::Submit() {
   const int ret = io_uring_submit(&ring);
   if (ret < 0) {
-    throw IoError{absl::StrCat("failed to submit write request, error ", -ret)};
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_IO_ERROR),
+      ERR_MSG("failed to submit write request: ", std::strerror(-ret)));
   }
 }
 
@@ -128,7 +138,9 @@ bool URing::Deque(bool wait, uint64_t* data) {
 
   if (ret < 0) {
     if (ret != -EAGAIN) {
-      throw IoError{absl::StrCat("Failed to peek a request, error ", -ret)};
+      THROW_SQL_ERROR(
+        ERR_CODE(ERRCODE_IO_ERROR),
+        ERR_MSG("Failed to peek a request: ", std::strerror(-ret)));
     }
 
     return false;
@@ -136,8 +148,9 @@ bool URing::Deque(bool wait, uint64_t* data) {
 
   SDB_ASSERT(cqe != nullptr);
   if (cqe->res < 0) {
-    throw IoError{
-      absl::StrCat("Async i/o operation failed, error ", -cqe->res)};
+    THROW_SQL_ERROR(
+      ERR_CODE(pg::ErrcodeForFileAccess(-cqe->res)),
+      ERR_MSG("Async i/o operation failed: ", std::strerror(-cqe->res)));
   }
 
   *data = cqe->user_data;
@@ -306,21 +319,16 @@ class AsyncIndexOutput final : public IndexOutput {
 IndexOutput::ptr AsyncIndexOutput::Open(const path_char_t* name,
                                         AsyncFilePtr&& async) {
   SDB_ASSERT(name);
-
-  if (!async) {
-    throw IoError{absl::StrCat("Failed to create file '",
-                               file_utils::ToStr(name),
-                               "': no asynchronous I/O queue")};
-  }
+  SDB_ASSERT(async);
 
   file_utils::handle_t handle(
     file_utils::Open(name, file_utils::OpenMode::Write, IR_FADVICE_NORMAL));
 
   if (nullptr == handle) {
     const int error = GET_ERROR();
-    throw IoError{absl::StrCat("Failed to create file '",
-                               file_utils::ToStr(name),
-                               "': ", std::strerror(error))};
+    THROW_SQL_ERROR(ERR_CODE(pg::ErrcodeForFileAccess(error)),
+                    ERR_MSG("Failed to create file '", file_utils::ToStr(name),
+                            "': ", std::strerror(error)));
   }
 
   return IndexOutput::ptr{

@@ -25,9 +25,9 @@
 
 #include <absl/container/flat_hash_map.h>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/store/directory.hpp"
 #include "iresearch/store/directory_attributes.hpp"
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 #include "iresearch/utils/resource_manager.hpp"
 
 namespace irs {
@@ -208,7 +208,10 @@ class MemoryIndexOutput : public IndexOutput {
 
   void Flush() noexcept final { _file.Length(Position()); }
 
-  uint32_t Checksum() override { throw NotSupported{}; }
+  uint32_t Checksum() override {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
+                    ERR_MSG("this memory output keeps no checksum"));
+  }
 
   uint64_t CloseImpl() noexcept final {
     // TODO(mbkkt) maybe we need reset?

@@ -36,7 +36,6 @@
 #include <duckdb/storage/storage_manager.hpp>
 #include <duckdb/transaction/duck_transaction_manager.hpp>
 #include <filesystem>
-#include <iresearch/error/error.hpp>
 #include <iresearch/formats/index_meta_reader.hpp>
 #include <iresearch/formats/index_meta_writer.hpp>
 #include <iresearch/index/column_info.hpp>
@@ -120,7 +119,10 @@ void ResolveCheckpointSave(irs::Directory& dir, duckdb::idx_t db_id) {
                                  [&](duckdb::BinaryDeserializer& in) {
                                    checkpoint = ReadStamp(in).checkpoint;
                                  });
-  } catch (const irs::IndexError&) {
+  } catch (const irs::SqlException& e) {
+    if (e.error().errcode != ERRCODE_INDEX_CORRUPTED) {
+      throw;
+    }
     checkpoint = 0;
   }
   if (checkpoint != 0) {

@@ -56,8 +56,9 @@ class MemoryIndex {
         write_docs(doc);
       }
       if (!trx.Commit()) {
-        THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
-                        ERR_MSG("failed to index the text to highlight"));
+        THROW_SQL_ERROR(
+          ERR_CODE(ERRCODE_OUT_OF_MEMORY),
+          ERR_MSG("failed to index the text to highlight: out of memory"));
       }
     }
     writer->RefreshCommit();

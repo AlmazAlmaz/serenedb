@@ -27,13 +27,13 @@
 #include <duckdb/common/serializer/binary_deserializer.hpp>
 #include <vector>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/formats/format_utils.hpp"
 #include "iresearch/formats/segment_meta_writer.hpp"
 #include "iresearch/index/document_mask.hpp"
 #include "iresearch/index/file_names.hpp"
 #include "iresearch/index/index_meta.hpp"
 #include "iresearch/store/directory.hpp"
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 
 namespace irs::segment_meta {
 namespace {
@@ -76,9 +76,10 @@ format_utils::Footer ReadLink(IndexInput& in, std::string_view file,
 
       if (ReadFiles(meta_in, files)) {
         if (has_files) [[unlikely]] {
-          throw IndexError{
-            absl::StrCat("Corrupted document mask chain, path: ", file,
-                         ", a second link carries the segment file list")};
+          THROW_SQL_ERROR(
+            ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+            ERR_MSG("Corrupted document mask chain, path: ", file,
+                    ", a second link carries the segment file list"));
         }
         has_files = true;
       }
@@ -98,8 +99,8 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
 
   if (!ParseFileName(filename, kExt, segment_name, segment_version))
     [[unlikely]] {
-    throw IndexError{
-      absl::StrCat("Malformed segment meta file name: ", filename)};
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+                    ERR_MSG("Malformed segment meta file name: ", filename));
   }
 
   std::string name{segment_name};
@@ -122,9 +123,10 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
   const auto mask_size = footer.data_len;
 
   if (mask_size == 0 && !parents.empty()) [[unlikely]] {
-    throw IndexError{absl::StrCat("Corrupted document mask chain of '", name,
-                                  "', maskless head derives from ",
-                                  parents.size(), " link(s)")};
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+      ERR_MSG("Corrupted document mask chain of '", name,
+              "', maskless head derives from ", parents.size(), " link(s)"));
   }
 
   std::shared_ptr<DocumentMask> docs_mask;
@@ -141,9 +143,10 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
 
     for (uint64_t floor = 0; const auto link : parents) {
       if (link < floor || link >= segment_version) [[unlikely]] {
-        throw IndexError{absl::StrCat(
-          "Corrupted document mask chain of '", name, "', version(",
-          segment_version, ") derives from ", link, " out of order")};
+        THROW_SQL_ERROR(
+          ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+          ERR_MSG("Corrupted document mask chain of '", name, "', version(",
+                  segment_version, ") derives from ", link, " out of order"));
       }
       floor = link + 1;
 
@@ -154,8 +157,9 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
       const auto link_footer = ReadLink(*mask_in, file, files, has_files);
 
       if (link_footer.data_len == 0) [[unlikely]] {
-        throw IndexError{absl::StrCat("Corrupted document mask chain of '",
-                                      name, "', maskless link: ", file)};
+        THROW_SQL_ERROR(ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+                        ERR_MSG("Corrupted document mask chain of '", name,
+                                "', maskless link: ", file));
       }
 
       builder.Merge(ReadDocumentMask(*mask_in, link_footer.data_len));
@@ -172,17 +176,19 @@ void Read(const Directory& dir, SegmentMeta& meta, std::string_view filename) {
   }
 
   if (!has_files) [[unlikely]] {
-    throw IndexError{
-      absl::StrCat("While reading segment meta '", name,
-                   "', error: the segment file list is missing")};
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+                    ERR_MSG("While reading segment meta '", name,
+                            "', error: the segment file list is missing"));
   }
 
   const auto mask_count = docs_mask ? docs_mask->Count() : 0;
 
   if (docs_count >= doc_limits::eof() || mask_count > docs_count) [[unlikely]] {
-    throw IndexError{absl::StrCat(
-      "While reading segment meta '", name, "', error: docs_count(", docs_count,
-      ") is out of range for ", mask_count, " masked document(s)")};
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INDEX_CORRUPTED),
+      ERR_MSG("While reading segment meta '", name, "', error: docs_count(",
+              docs_count, ") is out of range for ", mask_count,
+              " masked document(s)"));
   }
 
   // all operations below are noexcept

@@ -4298,7 +4298,8 @@ TEST_P(DirectoryTestCase, smoke_store) {
   try {
     dir.open("invalid_file_name", irs::IOAdvice::NORMAL);
     FAIL() << "opening a missing file must throw";
-  } catch (const irs::IoError& e) {
+  } catch (const irs::SqlException& e) {
+    EXPECT_EQ(e.error().errcode, ERRCODE_UNDEFINED_FILE);
     const std::string_view what = e.what();
     EXPECT_NE(std::string_view::npos, what.find("invalid_file_name")) << what;
     EXPECT_NE(std::string_view::npos, what.find("No such file or directory"))

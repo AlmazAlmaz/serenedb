@@ -40,7 +40,8 @@ class DirectoryUtilsTests : public ::testing::Test {
     irs::DirectoryAttributes& attributes() noexcept final { return _attrs; }
 
     irs::IndexOutput::ptr create(std::string_view name) final {
-      throw irs::IoError{absl::StrCat("cannot create ", name)};
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_IO_ERROR),
+                      ERR_MSG("cannot create ", name));
     }
 
     bool exists(bool&, std::string_view) const noexcept final { return false; }
@@ -59,7 +60,8 @@ class DirectoryUtilsTests : public ::testing::Test {
 
     irs::IndexInput::ptr open(std::string_view name,
                               irs::IOAdvice) const final {
-      throw irs::IoError{absl::StrCat("cannot open ", name)};
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_IO_ERROR),
+                      ERR_MSG("cannot open ", name));
     }
 
     bool remove(std::string_view) noexcept final { return false; }
@@ -250,7 +252,8 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
     irs::DirectoryAttributes attrs{};
     irs::DirectoryAttributes& attributes() noexcept final { return attrs; }
     irs::IndexOutput::ptr create(std::string_view name) final {
-      throw irs::IoError{absl::StrCat("cannot create ", name)};
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_IO_ERROR),
+                      ERR_MSG("cannot create ", name));
     }
     bool exists(bool&, std::string_view) const noexcept final { return false; }
     bool length(uint64_t&, std::string_view) const noexcept final {
@@ -265,7 +268,8 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
     }
     irs::IndexInput::ptr open(std::string_view name,
                               irs::IOAdvice) const final {
-      throw irs::IoError{absl::StrCat("cannot open ", name)};
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_IO_ERROR),
+                      ERR_MSG("cannot open ", name));
     }
     bool remove(std::string_view) noexcept final { return false; }
     bool rename(std::string_view, std::string_view) noexcept final {
@@ -280,7 +284,7 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
   {
     irs::RefTrackingDirectory track_dir(error_dir);
 
-    ASSERT_THROW(track_dir.create("abc"), irs::IoError);
+    ASSERT_SQL_ERROR(track_dir.create("abc"), ERRCODE_IO_ERROR);
 
     ASSERT_TRUE(track_dir.GetRefs().empty());
   }
@@ -289,7 +293,8 @@ TEST_F(DirectoryUtilsTests, test_ref_tracking_dir) {
   {
     irs::RefTrackingDirectory track_dir(error_dir, true);
 
-    ASSERT_THROW(track_dir.open("abc", irs::IOAdvice::NORMAL), irs::IoError);
+    ASSERT_SQL_ERROR(track_dir.open("abc", irs::IOAdvice::NORMAL),
+                     ERRCODE_IO_ERROR);
 
     ASSERT_TRUE(track_dir.GetRefs().empty());
   }

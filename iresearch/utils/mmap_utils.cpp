@@ -26,9 +26,10 @@
 
 #include <cstring>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/utils/assert.hpp"
 #include "iresearch/utils/file_utils_ext.hpp"
+#include "iresearch/utils/pg/errcode_for_file_access.hpp"
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 #include "iresearch/utils/shared.hpp"
 
 namespace irs::mmap_utils {
@@ -65,8 +66,9 @@ void MMapHandle::open(const path_char_t* path) {
   if (fd < 0) {
     const int error = errno;
     _rm.Decrease(1);
-    throw IoError{absl::StrCat("Failed to open file '", file_utils::ToStr(path),
-                               "': ", std::strerror(error))};
+    THROW_SQL_ERROR(ERR_CODE(pg::ErrcodeForFileAccess(error)),
+                    ERR_MSG("Failed to open file '", file_utils::ToStr(path),
+                            "': ", std::strerror(error)));
   }
 
   _fd = fd;
@@ -76,9 +78,10 @@ void MMapHandle::open(const path_char_t* path) {
   if (!file_utils::ByteSize(size, fd)) {
     const int error = errno;
     close();
-    throw IoError{absl::StrCat("Failed to get the size of file '",
-                               file_utils::ToStr(path),
-                               "': ", std::strerror(error))};
+    THROW_SQL_ERROR(
+      ERR_CODE(pg::ErrcodeForFileAccess(error)),
+      ERR_MSG("Failed to get the size of file '", file_utils::ToStr(path),
+              "': ", std::strerror(error)));
   }
 
   if (size) {
@@ -94,9 +97,9 @@ void MMapHandle::open(const path_char_t* path) {
     if (MAP_FAILED == addr) {
       const int error = errno;
       close();
-      throw IoError{absl::StrCat("Failed to mmap file '",
-                                 file_utils::ToStr(path),
-                                 "': ", std::strerror(error))};
+      THROW_SQL_ERROR(ERR_CODE(pg::ErrcodeForFileAccess(error)),
+                      ERR_MSG("Failed to mmap file '", file_utils::ToStr(path),
+                              "': ", std::strerror(error)));
     }
 
     _addr = addr;

@@ -30,7 +30,6 @@
 #include <span>
 #include <vector>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/formats/format_utils.hpp"
 #include "iresearch/index/document_mask.hpp"
 #include "iresearch/index/file_names.hpp"

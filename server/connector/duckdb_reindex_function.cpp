@@ -839,9 +839,10 @@ void RunDelta(duckdb::ClientContext& context, ConnectionContext& conn_ctx,
     }
     trx.RegisterFlush();
     if (!trx.Commit()) {
-      THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
-                      ERR_MSG("REINDEX delta of \"", target.name,
-                              "\": failed to commit the removes"));
+      THROW_SQL_ERROR(
+        ERR_CODE(ERRCODE_OUT_OF_MEMORY),
+        ERR_MSG("REINDEX delta of \"", target.name,
+                "\": failed to commit the removes: out of memory"));
     }
   }
 

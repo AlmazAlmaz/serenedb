@@ -328,6 +328,12 @@ bool RebuildGroup(duckdb::ClientContext& context,
         removal = MakeRemoval(std::move(rowids));
         return true;
       });
+  } catch (const irs::SqlException& e) {
+    THROW_SQL_ERROR(
+      ERR_CODE(e.error().errcode),
+      ERR_MSG("search-table build: failed to swap in the rebuilt segments on "
+              "table ",
+              target.table_id, ": ", e.message()));
   } catch (const std::exception& e) {
     THROW_SQL_ERROR(
       ERR_CODE(ERRCODE_INTERNAL_ERROR),

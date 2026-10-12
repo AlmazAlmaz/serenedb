@@ -28,7 +28,6 @@
 #include <utility>
 #include <vector>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/formats/format_utils.hpp"
 #include "iresearch/formats/hnsw/hnsw_reader.hpp"
 #include "iresearch/formats/ivf/ivf_reader.hpp"
@@ -53,8 +52,9 @@ IdxReader::IdxReader(const Directory& dir, std::string_view segment_name)
   const auto filename = absl::StrCat(segment_name, ".", kIdxFormatExt);
   bool exists = false;
   if (!dir.exists(exists, filename)) {
-    throw IoError{
-      absl::StrCat("Failed to check existence of file, path: ", filename)};
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_IO_ERROR),
+      ERR_MSG("Failed to check existence of file, path: ", filename));
   }
   if (!exists) {
     return;

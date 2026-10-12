@@ -30,7 +30,6 @@
 #include <yaclib/coro/await.hpp>
 #include <yaclib/coro/future.hpp>
 
-#include "iresearch/error/error.hpp"
 #include "iresearch/formats/format_utils.hpp"
 #include "iresearch/formats/hnsw/hnsw_writer.hpp"
 #include "iresearch/formats/index/idx_writer.hpp"

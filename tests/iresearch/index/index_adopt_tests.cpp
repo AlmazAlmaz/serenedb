@@ -576,7 +576,8 @@ TEST_F(IndexAdoptTest, AdoptSegmentRejectsAnUnreadableMeta) {
 
   Restart(/*cleanup_on_open=*/false);
   ASSERT_NE(nullptr, _dir->create(adopt.front()));
-  EXPECT_THROW(_writer->AdoptSegment(adopt.front(), /*tick=*/1), irs::IoError);
+  ASSERT_SQL_ERROR(_writer->AdoptSegment(adopt.front(), /*tick=*/1),
+                   ERRCODE_INDEX_CORRUPTED);
 
   _writer->RefreshCommit();
   EXPECT_EQ(0, _writer->GetSnapshot().live_docs_count())
@@ -854,13 +855,13 @@ TEST_F(IndexAdoptTest, ReplaceSegmentsRefusesABegunCommit) {
   ASSERT_TRUE(_writer->RefreshBegin());
 
   bool asked = false;
-  EXPECT_THROW(
+  ASSERT_SQL_ERROR(
     _writer->ReplaceSegments(Views(sources), Views(replacement),
                              [&](irs::IndexWriter::QueryContext::FilterPtr&) {
                                asked = true;
                                return true;
                              }),
-    irs::IoError);
+    ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE);
   EXPECT_FALSE(asked);
 
   _writer->RefreshCommit();
@@ -1463,7 +1464,8 @@ TEST_F(IndexAdoptTest, AbortBeforeReplaceLosesTheFilesToCleanup) {
        "ordering note in search_table_backfill.cpp can be dropped";
   // And the swap correctly refuses rather than adopting a segment whose files
   // are gone.
-  EXPECT_THROW(Replace(*_writer, sources, replacement), irs::IoError);
+  ASSERT_SQL_ERROR(Replace(*_writer, sources, replacement),
+                   ERRCODE_UNDEFINED_FILE);
   EXPECT_EQ(1, _writer->GetSnapshot().live_docs_count())
     << "the original row must still be there";
 }

@@ -339,9 +339,9 @@ SereneDBPhysicalCreateIndex::GetGlobalSinkState(
     trx.RegisterFlush();
     if (!trx.Commit()) {
       THROW_SQL_ERROR(
-        ERR_CODE(ERRCODE_INTERNAL_ERROR),
+        ERR_CODE(ERRCODE_OUT_OF_MEMORY),
         ERR_MSG("REINDEX of \"", extras->source_index.GetIdentifierName(),
-                "\": failed to commit the remove-all"));
+                "\": failed to commit the remove-all: out of memory"));
     }
   }
 
@@ -595,6 +595,11 @@ duckdb::SinkCombineResultType SereneDBPhysicalCreateIndex::Combine(
   trx.RegisterFlush();
   try {
     trx.Flush();
+  } catch (const irs::SqlException& e) {
+    lstate.search_trx.reset();
+    THROW_SQL_ERROR(ERR_CODE(e.error().errcode),
+                    ERR_MSG("failed to flush index '", gstate.index_name,
+                            "': ", e.message()));
   } catch (const std::exception& e) {
     lstate.search_trx.reset();
     THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
@@ -604,9 +609,9 @@ duckdb::SinkCombineResultType SereneDBPhysicalCreateIndex::Combine(
   const bool committed = trx.Commit();
   lstate.search_trx.reset();
   if (!committed) {
-    THROW_SQL_ERROR(
-      ERR_CODE(ERRCODE_INTERNAL_ERROR),
-      ERR_MSG("failed to commit index '", gstate.index_name, "'"));
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_OUT_OF_MEMORY),
+                    ERR_MSG("failed to commit index '", gstate.index_name,
+                            "': out of memory"));
   }
   AdvanceUncommittedMin(gstate, lstate.uncommitted_min_slot,
                         std::numeric_limits<int64_t>::max());
@@ -645,9 +650,9 @@ duckdb::SinkFinalizeType SereneDBPhysicalCreateIndex::Finalize(
                 [&](size_t i) { return delete_log[i]; });
     trx.RegisterFlush();
     if (!trx.Commit()) {
-      THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_OUT_OF_MEMORY),
                       ERR_MSG("failed to replay concurrent deletes for index '",
-                              gstate.index_name, "'"));
+                              gstate.index_name, "': out of memory"));
     }
   }
   SDB_IF_FAILURE("refresh_before_manifest_publish") {
