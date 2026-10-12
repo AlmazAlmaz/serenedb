@@ -8,9 +8,6 @@ ROWS="${CURVE_BENCH_ROWS:-1000000}"
 REPS="${CURVE_BENCH_REPS:-7}"
 PORT="${CURVE_BENCH_PORT:-6471}"
 SEGMENT_MEMORY_MAX="${CURVE_BENCH_SEGMENT_MEMORY_MAX:-}"
-DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/curve-bench-XXXXXX")"
-LOG="${DATA_DIR}.log"
-
 if [[ ! -x "${SERENED_BIN}" ]]; then
 	echo "missing ${SERENED_BIN}; set CURVE_BENCH_BIN" >&2
 	exit 1
@@ -28,17 +25,31 @@ if [[ -n "${SEGMENT_MEMORY_MAX}" ]]; then
 	INDEX_OPTIONS=" WITH (segment_memory_max = ${SEGMENT_MEMORY_MAX})"
 fi
 
+DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/curve-bench-XXXXXX")"
+LOG="${DATA_DIR}.log"
+
 "${SERENED_BIN}" "${DATA_DIR}" --listen "postgres://127.0.0.1:${PORT}" >"${LOG}" 2>&1 &
 SERENED_PID=$!
 trap 'kill -9 ${SERENED_PID} >/dev/null 2>&1 || true; rm -rf "${DATA_DIR}"' EXIT
 
 PSQL=(psql -h 127.0.0.1 -p "${PORT}" -U postgres -d postgres -X -q -v ON_ERROR_STOP=1)
+READY=false
 for _ in $(seq 1 120); do
-	if "${PSQL[@]}" -c 'SELECT 1' >/dev/null 2>&1; then
+	if ! kill -0 "${SERENED_PID}" >/dev/null 2>&1; then
+		echo "server failed to start; see ${LOG}" >&2
+		exit 1
+	fi
+	if grep -q 'ready for business' "${LOG}" &&
+		"${PSQL[@]}" -c 'SELECT 1' >/dev/null 2>&1; then
+		READY=true
 		break
 	fi
 	sleep 0.5
 done
+if [[ "${READY}" != true ]]; then
+	echo "server did not become ready; see ${LOG}" >&2
+	exit 1
+fi
 
 sql() {
 	"${PSQL[@]}" -At -c "$1"
