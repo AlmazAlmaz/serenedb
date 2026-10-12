@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <duckdb/common/error_data.hpp>
 #include <exception>
 #include <functional>
 #include <iresearch/search/filters/filter_optimizer.hpp>
@@ -100,7 +101,8 @@ int RunServer(int argc, char** argv) {
         try {
           fn();
         } catch (const std::exception& ex) {
-          SDB_ERROR(GENERAL, "exception stopping ", what, ": ", ex.what());
+          SDB_ERROR(GENERAL, "exception stopping ", what, ": ",
+                    duckdb::ErrorData{ex}.RawMessage());
         } catch (...) {
           SDB_ERROR(GENERAL, "unknown exception stopping ", what);
         }
@@ -171,8 +173,8 @@ int RunServer(int argc, char** argv) {
     // gLogger is still up (Shutdown runs in main() after RunServer
     // returns), but go through SDB_ERROR so the line lands in the same
     // duckdb_logs() store as everything else.
-    SDB_ERROR(GENERAL,
-              "serened terminated because of an exception: ", ex.what());
+    SDB_ERROR(GENERAL, "serened terminated because of an exception: ",
+              duckdb::ErrorData{ex}.RawMessage());
   } catch (...) {
     SDB_ERROR(GENERAL,
               "serened terminated because of an exception of unknown type");

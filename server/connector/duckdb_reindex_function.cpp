@@ -33,6 +33,7 @@
 #include <duckdb/catalog/catalog_entry/view_catalog_entry.hpp>
 #include <duckdb/catalog/catalog_transaction.hpp>
 #include <duckdb/catalog/permissions.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/multi_file/multi_file_reader.hpp>
 #include <duckdb/common/multi_file/multi_file_states.hpp>
 #include <duckdb/common/string_util.hpp>
@@ -1308,7 +1309,7 @@ absl::StatusOr<bool> RunReindexTick(duckdb::DatabaseInstance& db,
     }
     return absl::InternalError(ex.message());
   } catch (const std::exception& ex) {
-    return absl::InternalError(ex.what());
+    return absl::InternalError(duckdb::ErrorData{ex}.RawMessage());
   }
 }
 

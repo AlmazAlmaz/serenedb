@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdint>
 #include <duckdb/catalog/catalog_entry/duck_index_entry.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/main/attached_database.hpp>
 #include <duckdb/main/database_manager.hpp>
 #include <exception>
@@ -361,7 +362,8 @@ yaclib::Future<> IntervalLoop(std::weak_ptr<Storage> weak,
     // timer -- a clean termination signal, not an error.
     SDB_TRACE(SEARCH, name, " loop stopped");
   } catch (const std::exception& ex) {
-    SDB_ERROR(SEARCH, name, " loop terminated by exception: ", ex.what());
+    SDB_ERROR(SEARCH, name, " loop terminated by exception: ",
+              duckdb::ErrorData{ex}.RawMessage());
   }
   co_return {};
 }
@@ -488,7 +490,8 @@ yaclib::Future<> CompactionCoordinator(std::weak_ptr<Storage> weak) {
     // timer -- a clean termination signal, not an error.
     SDB_TRACE(SEARCH, "compaction loop stopped");
   } catch (const std::exception& ex) {
-    SDB_ERROR(SEARCH, "compaction loop terminated by exception: ", ex.what());
+    SDB_ERROR(SEARCH, "compaction loop terminated by exception: ",
+              duckdb::ErrorData{ex}.RawMessage());
   }
   co_return {};
 }

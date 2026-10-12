@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <duckdb/common/enums/database_modification_type.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/exception.hpp>
 #include <duckdb/common/file_system.hpp>
 #include <duckdb/main/attached_database.hpp>
@@ -123,7 +124,8 @@ void ClusterCatalog::SyncCatalogLogLoop() {
     try {
       log->SyncUpTo(offset);
     } catch (const std::exception& e) {
-      SDB_ERROR(GENERAL, "catalog log sync failed: ", e.what());
+      SDB_ERROR(GENERAL,
+                "catalog log sync failed: ", duckdb::ErrorData{e}.RawMessage());
     }
   }
 }
@@ -206,7 +208,8 @@ void ClusterCatalog::MaybeCompactCatalogLog() {
   try {
     CompactCatalogLog();
   } catch (const std::exception& e) {
-    SDB_WARN(GENERAL, "catalog log rewrite failed: ", e.what());
+    SDB_WARN(GENERAL,
+             "catalog log rewrite failed: ", duckdb::ErrorData{e}.RawMessage());
   }
 }
 
@@ -255,7 +258,8 @@ void ClusterCatalog::CompactCatalogLog() {
   try {
     SyncDirectory(std::filesystem::path{path}.parent_path());
   } catch (const std::exception& e) {
-    SDB_FATAL(GENERAL, "catalog log rewrite: ", e.what());
+    SDB_FATAL(GENERAL,
+              "catalog log rewrite: ", duckdb::ErrorData{e}.RawMessage());
   }
 }
 

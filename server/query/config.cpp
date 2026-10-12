@@ -24,6 +24,7 @@
 #include <absl/strings/match.h>
 #include <absl/strings/str_cat.h>
 
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/execution/operator/helper/physical_set.hpp>
 #include <duckdb/main/attached_database.hpp>
 #include <duckdb/main/client_context.hpp>
@@ -240,7 +241,8 @@ void Config::RestoreValue(std::string_view key, duckdb::Value value) noexcept {
     }
   } catch (const std::exception& e) {
     _client_ctx.WarnUser(
-      absl::StrCat("could not restore setting \"", key, "\": ", e.what()));
+      absl::StrCat("could not restore setting \"", key,
+                   "\": ", duckdb::ErrorData{e}.RawMessage()));
   }
 }
 

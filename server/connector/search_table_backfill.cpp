@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <duckdb/common/allocator.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/types/selection_vector.hpp>
 #include <duckdb/main/client_context.hpp>
@@ -332,7 +333,7 @@ bool RebuildGroup(duckdb::ClientContext& context,
       ERR_CODE(ERRCODE_INTERNAL_ERROR),
       ERR_MSG("search-table build: failed to swap in the rebuilt segments on "
               "table ",
-              target.table_id, ": ", e.what()));
+              target.table_id, ": ", duckdb::ErrorData{e}.RawMessage()));
   }
   // Need explicit call here so on Publish we don't have pending transactions.
   abort_all();

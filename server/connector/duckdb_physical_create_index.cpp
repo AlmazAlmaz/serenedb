@@ -29,6 +29,7 @@
 #include <duckdb/catalog/catalog_entry/duck_index_entry.hpp>
 #include <duckdb/catalog/catalog_entry/duck_schema_entry.hpp>
 #include <duckdb/catalog/catalog_entry/duck_table_entry.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/common/vector/struct_vector.hpp>
 #include <duckdb/execution/execution_context.hpp>
@@ -596,9 +597,9 @@ duckdb::SinkCombineResultType SereneDBPhysicalCreateIndex::Combine(
     trx.Flush();
   } catch (const std::exception& e) {
     lstate.search_trx.reset();
-    THROW_SQL_ERROR(
-      ERR_CODE(ERRCODE_INTERNAL_ERROR),
-      ERR_MSG("failed to flush index '", gstate.index_name, "': ", e.what()));
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INTERNAL_ERROR),
+                    ERR_MSG("failed to flush index '", gstate.index_name,
+                            "': ", duckdb::ErrorData{e}.RawMessage()));
   }
   const bool committed = trx.Commit();
   lstate.search_trx.reset();

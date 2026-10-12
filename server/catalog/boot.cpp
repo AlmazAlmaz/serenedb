@@ -30,6 +30,7 @@
 #include <duckdb/catalog/catalog_transaction.hpp>
 #include <duckdb/catalog/duck_catalog.hpp>
 #include <duckdb/common/constants.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/exception.hpp>
 #include <duckdb/main/attached_database.hpp>
 #include <duckdb/main/client_context.hpp>
@@ -420,7 +421,8 @@ void InitCatalog(std::string_view directory) {
       context.RunFunctionInTransaction([&] { server.get().Attach(context); });
     } catch (const std::exception& e) {
       SDB_WARN(GENERAL, "failed to re-attach foreign server '",
-               server.get().name.GetIdentifierName(), "': ", e.what());
+               server.get().name.GetIdentifierName(),
+               "': ", duckdb::ErrorData{e}.RawMessage());
     }
   }
 }

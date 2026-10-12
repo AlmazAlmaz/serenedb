@@ -27,6 +27,7 @@
 #include <array>
 #include <cstring>
 #include <duckdb/catalog/catalog_entry/table_catalog_entry.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/types/timestamp.hpp>
 #include <duckdb/parser/parsed_data/create_table_info.hpp>
 #include <duckdb/parser/statement/create_statement.hpp>
@@ -2597,7 +2598,8 @@ yaclib::Task<> PgWireSession<Kind>::Run() {
     } catch (const std::exception& e) {
       // Teardown boundary, not error handling: every socket op is NoThrow, so a
       // throw here is a genuine escape -- fall through to stop + join.
-      SDB_ERROR(GENERAL, "pg session terminated by exception: ", e.what());
+      SDB_ERROR(GENERAL, "pg session terminated by exception: ",
+                duckdb::ErrorData{e}.RawMessage());
     }
     this->Stop();
     co_await std::move(cpu);

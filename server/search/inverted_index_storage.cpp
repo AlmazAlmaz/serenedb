@@ -25,6 +25,7 @@
 #include <absl/time/time.h>
 
 #include <chrono>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/serializer/binary_deserializer.hpp>
 #include <duckdb/common/serializer/binary_serializer.hpp>
 #include <duckdb/main/attached_database.hpp>
@@ -372,7 +373,7 @@ absl::Status InvertedIndexStorage::CleanupUnsafeImpl() {
   } catch (const std::exception& e) {
     return absl::InternalError(
       absl::StrCat("caught exception while cleaning up Search index '", GetId(),
-                   "': ", e.what()));
+                   "': ", duckdb::ErrorData{e}.RawMessage()));
   } catch (...) {
     return absl::InternalError(absl::StrCat(
       "caught exception while cleaning up Search index '", GetId(), "'"));
@@ -437,7 +438,7 @@ auto InvertedIndexStorage::CompactUnsafeImpl(
     co_return absl::InternalError(
       absl::StrCat("caught exception while executing compaction policy "
                    "on Search index '",
-                   GetId(), "': ", e.what()));
+                   GetId(), "': ", duckdb::ErrorData{e}.RawMessage()));
   } catch (...) {
     co_return absl::InternalError(
       absl::StrCat("caught exception while executing compaction policy "
@@ -523,7 +524,7 @@ absl::Status InvertedIndexStorage::RefreshUnsafeImpl(
   } catch (const std::exception& e) {
     return absl::InternalError(
       absl::StrCat("caught exception while refreshing Search index '", GetId(),
-                   "': ", e.what()));
+                   "': ", duckdb::ErrorData{e}.RawMessage()));
   } catch (...) {
     return absl::InternalError(absl::StrCat(
       "caught exception while refreshing Search index '", GetId(), "'"));
@@ -631,9 +632,9 @@ void InvertedIndexStorage::FinishCheckpoint() {
   try {
     _writer->RefreshFinish();
   } catch (const std::exception& e) {
-    SDB_FATAL(
-      SEARCH, "inverted index ", _index_id,
-      " cannot commit the index save of a written checkpoint: ", e.what());
+    SDB_FATAL(SEARCH, "inverted index ", _index_id,
+              " cannot commit the index save of a written checkpoint: ",
+              duckdb::ErrorData{e}.RawMessage());
   }
   _pending_checkpoint = 0;
   _directory_dirty.store(true, std::memory_order_relaxed);

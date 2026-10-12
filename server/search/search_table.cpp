@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/file_system.hpp>
 #include <duckdb/common/serializer/binary_deserializer.hpp>
 #include <duckdb/common/serializer/binary_serializer.hpp>
@@ -230,8 +231,9 @@ ResultWithTime SearchTable::RefreshUnsafe(
       }
     }
   } catch (const std::exception& e) {
-    result = absl::InternalError(absl::StrCat(
-      "refresh failed for search table ", GetTableId(), ": ", e.what()));
+    result = absl::InternalError(
+      absl::StrCat("refresh failed for search table ", GetTableId(), ": ",
+                   duckdb::ErrorData{e}.RawMessage()));
   }
   const uint64_t time_ms =
     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -355,8 +357,9 @@ auto SearchTable::CompactUnsafeAsync(
       empty_compaction = (res.size == 0);  // nothing merged -> idle round
     }
   } catch (const std::exception& e) {
-    result = absl::InternalError(absl::StrCat(
-      "consolidation failed for search table ", GetTableId(), ": ", e.what()));
+    result = absl::InternalError(
+      absl::StrCat("consolidation failed for search table ", GetTableId(), ": ",
+                   duckdb::ErrorData{e}.RawMessage()));
   }
   const uint64_t time_ms =
     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -372,8 +375,9 @@ ResultWithTime SearchTable::CleanupUnsafe() {
   try {
     irs::directory_utils::RemoveAllUnreferenced(*_dir);
   } catch (const std::exception& e) {
-    result = absl::InternalError(absl::StrCat(
-      "cleanup failed for search table ", GetTableId(), ": ", e.what()));
+    result = absl::InternalError(
+      absl::StrCat("cleanup failed for search table ", GetTableId(), ": ",
+                   duckdb::ErrorData{e}.RawMessage()));
   }
   const uint64_t time_ms =
     std::chrono::duration_cast<std::chrono::milliseconds>(

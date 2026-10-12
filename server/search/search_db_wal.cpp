@@ -416,7 +416,8 @@ void SearchDbWal::WriteFrameLocked(const uint8_t* frame, uint64_t size) {
   try {
     _active->Sync();  // commit point
   } catch (const std::exception& e) {
-    SDB_FATAL(SEARCH, "search WAL: failed to sync a commit record: ", e.what());
+    SDB_FATAL(SEARCH, "search WAL: failed to sync a commit record: ",
+              duckdb::ErrorData{e}.RawMessage());
   }
 
   if (_active->GetTotalWritten() > _seal_threshold) {

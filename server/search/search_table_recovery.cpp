@@ -28,6 +28,7 @@
 #include <chrono>
 #include <duckdb/catalog/catalog_entry/duck_table_entry.hpp>
 #include <duckdb/catalog/catalog_entry/schema_catalog_entry.hpp>
+#include <duckdb/common/error_data.hpp>
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/main/attached_database.hpp>
 #include <duckdb/main/connection.hpp>
@@ -246,7 +247,7 @@ void RunSearchTableRecovery() {
           info.search->AdoptSegment(pending.meta_file, tick);
         } catch (const std::exception& e) {
           SDB_FATAL(SEARCH, "search-table WAL recovery: table ", table_id,
-                    " tick=", tick, ": ", e.what());
+                    " tick=", tick, ": ", duckdb::ErrorData{e}.RawMessage());
         }
       }
 
