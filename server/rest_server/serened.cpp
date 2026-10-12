@@ -46,6 +46,7 @@
 #include "rest_server/database_path_feature.h"
 #include "scheduler/background_scheduler.h"
 #include "server/utils/app_server.h"
+#include "server/utils/build.h"
 #include "server/utils/init.h"
 #include "storage_engine/search_engine.h"
 
@@ -135,6 +136,7 @@ int RunServer(int argc, char** argv) {
       // than left to the DuckDB destructor in main(): an inverted index vetoes
       // it unless it can read its definition.
       stop("storage", [&] { irs::DuckDBEngine::Instance().CloseDatabases(); });
+      SDB_INFO(GENERAL, "SereneDB is shut down");
     };
 
     irs::CrashHandler::SetState("starting");
@@ -160,7 +162,7 @@ int RunServer(int argc, char** argv) {
     // running.
     network.StartListeners();
 
-    SDB_DEBUG(GENERAL, "SereneDB is ready for business. Have fun!");
+    SDB_INFO(STARTUP, "SereneDB is ready for business. Have fun!");
 
     irs::CrashHandler::SetState("running");
     server.wait();
@@ -223,6 +225,7 @@ int main(int argc, char* argv[]) {
                        : irs::ExecutableRemap{.skipped = "disabled"};
   auto& engine = irs::DuckDBEngine::Instance();
   engine.Initialize(&server::query::ConfigureServerDBConfig);
+  SDB_INFO(STARTUP, "starting SereneDB ", SERENEDB_VERSION);
   server::query::RegisterServerExtensions(engine.instance());
 
   sdb::app::InitProcess(argv[0]);

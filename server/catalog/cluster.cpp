@@ -302,8 +302,8 @@ void ClusterCatalog::Bootstrap(duckdb::ClientContext& context) {
                   "POSTGRES_PASSWORD");
       }
       info.password = std::move(*verifier);
-      SDB_DEBUG(GENERAL, "bootstrap: initial password set for role '",
-                kRootRole, "' from POSTGRES_PASSWORD");
+      SDB_INFO(STARTUP, "bootstrap: initial password set for role '",
+               kRootRole, "' from POSTGRES_PASSWORD");
     }
     CreateRole(transaction, info);
   }

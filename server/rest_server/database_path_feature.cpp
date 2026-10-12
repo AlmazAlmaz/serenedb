@@ -62,7 +62,7 @@ DatabasePathFeature::DatabasePathFeature()
   if (!std::filesystem::is_directory(_directory, ec)) {
     std::filesystem::create_directories(_directory, ec);
     if (!ec) {
-      SDB_DEBUG(GENERAL, "Created database directory: ", _directory);
+      SDB_INFO(STARTUP, "Created database directory: ", _directory);
     } else {
       SDB_FATAL(GENERAL, "Unable to create database directory '", _directory,
                 "': ", ec.message());

@@ -303,8 +303,8 @@ void Server::AddUnixListener(const network::ListenSpec& spec) {
   }
   acceptor->Start();
   _acceptors.push_back(std::move(acceptor));
-  SDB_DEBUG(GENERAL, "network listening on ", spec.url,
-            " (unix:", spec.unix_abstract ? "@" + spec.unix_path : path, ")");
+  SDB_INFO(STARTUP, "listening on ", spec.url,
+           " (unix:", spec.unix_abstract ? "@" + spec.unix_path : path, ")");
 }
 
 void Server::AddListener(const network::ListenSpec& spec) {
@@ -377,9 +377,9 @@ void Server::AddListener(const network::ListenSpec& spec) {
   }
   acceptor->Start();
   _acceptors.push_back(std::move(acceptor));
-  SDB_DEBUG(GENERAL, "network listening on ", spec.url, " (",
-            spec.endpoint.address().to_string(), ":", spec.endpoint.port(),
-            ssl ? ", tls" : "", ")");
+  SDB_INFO(STARTUP, "listening on ", spec.url, " (",
+           spec.endpoint.address().to_string(), ":", spec.endpoint.port(),
+           ssl ? ", tls" : "", ")");
 }
 
 void Server::StartIoPool() {

@@ -106,7 +106,7 @@ void AppServer::parseOptions(int argc, char* argv[]) {
 void AppServer::wait() {
   signals::InstallShutdownHandlers();
   lifecycle::WaitForShutdown();
-  SDB_DEBUG(GENERAL, "received shutdown signal, beginning shut down sequence");
+  SDB_INFO(GENERAL, "received shutdown signal, beginning shut down sequence");
 }
 
 }  // namespace sdb::app

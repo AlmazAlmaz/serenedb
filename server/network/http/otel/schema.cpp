@@ -147,7 +147,7 @@ absl::Status EnsureSchema(std::string_view database, std::string_view schema) {
       return absl::InternalError(absl::StrCat(
         "database '", database, "' not visible after CREATE DATABASE"));
     }
-    SDB_DEBUG(STARTUP, "OpenTelemetry database created: ", database);
+    SDB_INFO(STARTUP, "OpenTelemetry database created: ", database);
   }
   Creator creator{name, oid, schema};
   if (creator.Exists()) {
@@ -156,8 +156,8 @@ absl::Status EnsureSchema(std::string_view database, std::string_view schema) {
   } else if (auto created = creator.Create(); !created.ok()) {
     return created;
   } else {
-    SDB_DEBUG(STARTUP, "OpenTelemetry schema created in ", database, ".",
-              schema);
+    SDB_INFO(STARTUP, "OpenTelemetry schema created in ", database, ".",
+             schema);
   }
   auto status = creator.Check();
   if (status.ok()) {

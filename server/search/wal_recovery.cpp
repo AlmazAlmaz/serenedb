@@ -24,6 +24,7 @@
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
 
+#include <atomic>
 #include <chrono>
 #include <duckdb/catalog/catalog_entry/duck_index_entry.hpp>
 #include <duckdb/catalog/catalog_entry/schema_catalog_entry.hpp>
@@ -56,14 +57,16 @@ using BoundIndexHandle =
 struct FinishReplayTask final : duckdb::BaseExecutorTask {
   FinishReplayTask(duckdb::TaskExecutor& executor,
                    std::optional<BoundIndexHandle> index,
-                   std::shared_ptr<InvertedIndexStorage> storage)
+                   std::shared_ptr<InvertedIndexStorage> storage,
+                   std::atomic_size_t& replayed)
     : BaseExecutorTask{executor},
       index{std::move(index)},
-      storage{std::move(storage)} {}
+      storage{std::move(storage)},
+      replayed{replayed} {}
 
   void ExecuteTask() final {
-    if (index) {
-      (*index)->FinishReplay();
+    if (index && (*index)->FinishReplay()) {
+      replayed.fetch_add(1, std::memory_order_relaxed);
     }
     if (const auto status = storage->Refresh(); !status.ok()) {
       SDB_WARN(SEARCH, "refresh of index '", storage->GetId(),
@@ -75,6 +78,7 @@ struct FinishReplayTask final : duckdb::BaseExecutorTask {
 
   std::optional<BoundIndexHandle> index;
   std::shared_ptr<InvertedIndexStorage> storage;
+  std::atomic_size_t& replayed;
 };
 
 std::vector<duckdb::reference<catalog::InvertedIndexEntry>>
@@ -156,9 +160,10 @@ void InitInvertedIndexes() {
   }
   duckdb::TaskExecutor executor{duckdb::TaskScheduler::GetScheduler(
     irs::DuckDBEngine::Instance().instance())};
+  std::atomic_size_t replayed{0};
   for (auto& [index, storage] : recovering) {
-    executor.ScheduleTask(
-      duckdb::make_uniq<FinishReplayTask>(executor, std::move(index), storage));
+    executor.ScheduleTask(duckdb::make_uniq<FinishReplayTask>(
+      executor, std::move(index), storage, replayed));
   }
   executor.WorkOnTasks();
   if (recovering.empty()) {
@@ -166,8 +171,15 @@ void InitInvertedIndexes() {
   }
   const auto duration =
     absl::FromChrono(std::chrono::steady_clock::now() - begin);
-  SDB_DEBUG(SEARCH, "search index recovery: ", recovering.size(),
-            " inverted index(es) in ", absl::FormatDuration(duration));
+  if (const auto count = replayed.load(std::memory_order_relaxed);
+      count != 0) {
+    SDB_INFO(SEARCH, "search index recovery: replayed the WAL into ", count,
+             " of ", recovering.size(), " inverted index(es) in ",
+             absl::FormatDuration(duration));
+  } else {
+    SDB_DEBUG(SEARCH, "search index recovery: ", recovering.size(),
+              " inverted index(es) in ", absl::FormatDuration(duration));
+  }
 }
 
 void StartInvertedIndexTasks() {

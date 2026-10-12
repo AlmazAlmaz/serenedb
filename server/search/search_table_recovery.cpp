@@ -275,7 +275,7 @@ void RunSearchTableRecovery() {
   if (recovered_shards > 0) {
     const auto duration =
       absl::FromChrono(std::chrono::steady_clock::now() - begin);
-    SDB_DEBUG(SEARCH, "Search-table WAL recovery: completed in ",
+    SDB_INFO(SEARCH, "Search-table WAL recovery: completed in ",
               absl::FormatDuration(duration), ", shards=", recovered_shards);
   }
 }

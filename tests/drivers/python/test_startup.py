@@ -59,6 +59,51 @@ class _Server:
         return self.log.read_text()
 
 
+def _run_until_ready(datadir: Path) -> _Server:
+    server = _Server(datadir)
+    try:
+        assert server.wait_ready(), server.output()
+    finally:
+        server.stop()
+    return server
+
+
+def test_info_timeline(tmp_path: Path) -> None:
+    datadir = tmp_path / "data"
+    first = _run_until_ready(datadir)
+    for line in ("starting SereneDB ", "Created database directory: ",
+                 f"listening on postgres://127.0.0.1:{first.port}",
+                 "SereneDB is ready for business",
+                 "received shutdown signal", "SereneDB is shut down"):
+        assert line in first.output(), first.output()
+
+    second = _run_until_ready(datadir)
+    assert "Created database directory" not in second.output(), second.output()
+    assert "search index recovery" not in second.output(), second.output()
+
+
+def test_recovery_summary_after_a_crash(tmp_path: Path) -> None:
+    datadir = tmp_path / "data"
+    server = _Server(datadir)
+    try:
+        assert server.wait_ready(), server.output()
+        with psycopg.connect(host="127.0.0.1", port=server.port,
+                             user="postgres", dbname="postgres",
+                             autocommit=True) as conn:
+            conn.execute("CREATE TABLE pudge (id INT PRIMARY KEY, body TEXT)")
+            conn.execute(
+                "CREATE INDEX pudge_idx ON pudge USING inverted(id, body)")
+            conn.execute("INSERT INTO pudge SELECT i, 'hook ' || i "
+                         "FROM range(100) t(i)")
+    finally:
+        server.proc.kill()
+        server.proc.wait(timeout=60)
+
+    restarted = _run_until_ready(datadir)
+    assert ("search index recovery: replayed the WAL into 1 of 1 inverted "
+            "index(es)" in restarted.output()), restarted.output()
+
+
 def test_second_instance_on_the_same_datadir(tmp_path: Path) -> None:
     datadir = tmp_path / "data"
     first = _Server(datadir)
