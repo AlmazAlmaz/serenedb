@@ -18,23 +18,23 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include <absl/container/btree_map.h>
+#include <absl/container/flat_hash_map.h>
 #include <benchmark/benchmark.h>
 
 #include <iresearch/utils/space_filling_curve.hpp>
-#include <map>
 #include <numeric>
 #include <random>
-#include <unordered_map>
 
 namespace {
 
 using namespace irs::curve;
 using Posting = std::vector<uint32_t>;
-using Dictionary = std::unordered_map<std::string, Posting>;
+using Dictionary = absl::flat_hash_map<std::string, Posting>;
 
 struct Sample {
   std::vector<Point> points;
-  std::array<std::array<std::map<uint64_t, Posting>, 4>, kMaxDimensions>
+  std::array<std::array<absl::btree_map<uint64_t, Posting>, 4>, kMaxDimensions>
     numeric;
   Dictionary curve;
   Options options;
@@ -51,7 +51,8 @@ struct Sample {
     std::mt19937_64 random{1099};
     std::uniform_real_distribution<double> values{0, 1000};
     for (uint32_t id = 0; id < 8192; ++id) {
-      Point point{};
+      Point point;
+      point.fill(0);
       const auto shared = values(random);
       for (uint32_t axis = 0; axis < dimensions; ++axis) {
         const auto value =
@@ -153,7 +154,8 @@ void CurveRanges(benchmark::State& state) {
       }
       return true;
     });
-  std::array<uint64_t, 4> result{};
+  std::array<uint64_t, 4> result;
+  result.fill(0);
   for (auto _ : state) {
     result = sample.Run(method);
     benchmark::DoNotOptimize(result);

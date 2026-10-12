@@ -332,7 +332,8 @@ ColumnTokenizer IndexTokenizers::Acquire(irs::field_id field_id,
   if (field.curve) {
     return {
       .analyzer = Tokenizer::TokenizerWrapper{
-        new connector::CurveTokenizer{*field.curve}, Tokenizer::Deleter{}}};
+        std::make_unique<connector::CurveTokenizer>(*field.curve).release(),
+        Tokenizer::Deleter{}}};
   }
   if (!field.tokenizer) {
     return {.analyzer = Tokenizer::TokenizerWrapper{
