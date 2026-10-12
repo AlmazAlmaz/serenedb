@@ -97,8 +97,12 @@ leaves that axis as it is; the bounds must be finite with `lower < upper`.
 On 10,000 points with `x` in `[0, 100)` and `y` in `[0, 10^9)`, a box matching
 220 rows produced 2,003 candidates without normalization and 234 with it. With
 DOUBLE values in `[1000, 1001]` and `max_level := 24`, the same box produced
-3,750 candidates without normalization and 239 with it. The bounds are part of
-the call, so the query repeats them.
+3,750 candidates without normalization and 239 with it. Normalization spends
+every level on the declared range, which also writes more distinct terms: on
+one million uniform DOUBLE points in `[0, 1000)` at `max_level := 32`, whose
+leading bits already separate the values, it did not speed up queries and grew
+the index from 100 MB to 167 MB. The bounds are part of the call, so the query
+repeats them.
 
 ## INET coordinates
 
@@ -140,8 +144,8 @@ differ within their upper bits, because the ordered encoding starts with the
 sign and the exponent, so a shallower index often selects the same candidates.
 On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
-range 1000 wide, with an index of 122 MB instead of 427 MB built in 0.66 s
-instead of 1.82 s. Integers are different: identifiers or counts far below
+range 1000 wide, with an index of 100 MB instead of 386 MB built in 0.61 s
+instead of 1.79 s. Integers are different: identifiers or counts far below
 `2^32` share their upper 32 bits, so at `max_level := 32` every row falls into
 the same cell and the index stops pruning. A box on one million BIGINT pairs
 read 1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
@@ -167,15 +171,16 @@ not automatically imply fewer postings for this term representation.
 
 A curve index pays off for boxes that are selective in several dimensions at
 once, where each column's range alone matches many rows: on one million
-independent three-dimensional points such boxes run 12 to 26 times faster than
+independent three-dimensional points such boxes run 10 to 24 times faster than
 intersecting per-column ranges. A full scan of one million rows takes about
 2 ms, so at that size the index beats a scan by at most about two times; on ten
-million rows selective boxes run up to six times faster than a scan.
-Correlated data narrows the gap: small boxes on correlated data are a tie, and
-wide correlated boxes lose to a scan. At the default depth the index costs five
-to six times the build time and four times the size of a per-column index.
-Benchmark the application's own distributions before choosing a budget, a step
-or a depth.
+million rows selective boxes run up to three and a half times faster than a
+scan. Correlated data narrows the gap: per-column ranges win small correlated
+boxes, and wide correlated boxes lose to a scan. A box bounded on one of three
+axes took 2.8 ms against a 1.9 ms scan of one million points. At the default
+depth the index costs five to seven times the build time and four to five
+times the size of a per-column index. Benchmark the application's own
+distributions before choosing a budget, a step or a depth.
 
 For a streaming index scan, `rows_scanned` in JSON profiling counts hits emitted
 by the posting filter after zonemap skipping and before
