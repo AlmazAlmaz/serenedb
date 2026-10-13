@@ -46,7 +46,6 @@ void CurveFunction(duckdb::DataChunk& args, duckdb::ExpressionState& state,
 }  // namespace
 
 void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
-  const irs::curve::Options defaults;
   duckdb::ScalarFunction function{
     duckdb::Identifier{kCurveFunction}, duckdb::vector<duckdb::LogicalType>{},
     duckdb::LogicalType::BLOB, CurveFunction, CurveBind};
@@ -58,9 +57,8 @@ void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
                     duckdb::Value{duckdb::LogicalType::INTEGER})
     .AddKeywordOnly("level_step", duckdb::LogicalType::INTEGER,
                     duckdb::Value{duckdb::LogicalType::INTEGER})
-    .AddKeywordOnly(
-      "max_cells", duckdb::LogicalType::INTEGER,
-      duckdb::Value::INTEGER(static_cast<int32_t>(defaults.max_cells)))
+    .AddKeywordOnly("max_cells", duckdb::LogicalType::INTEGER,
+                    duckdb::Value{duckdb::LogicalType::INTEGER})
     .AddKeywordOnly("lower", duckdb::LogicalType::ANY, duckdb::Value{})
     .AddKeywordOnly("upper", duckdb::LogicalType::ANY, duckdb::Value{});
   function.SetNullHandling(duckdb::FunctionNullHandling::SPECIAL_HANDLING);

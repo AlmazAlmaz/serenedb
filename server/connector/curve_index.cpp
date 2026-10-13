@@ -638,8 +638,10 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
     step.IsNull() ? irs::curve::DefaultLevelStep(options.dimensions)
                   : LimitOption(step, "level_step", 1,
                                 irs::curve::MaxLevelStep(options.dimensions));
-  options.max_cells = LimitOption(option(kMaxCellsOption, "max_cells"),
-                                  "max_cells", 1, irs::curve::kMaxCells);
+  const auto cells = option(kMaxCellsOption, "max_cells");
+  options.max_cells =
+    cells.IsNull() ? irs::curve::DefaultMaxCells(options.dimensions)
+                   : LimitOption(cells, "max_cells", 1, irs::curve::kMaxCells);
 
   const auto lower = option(kLowerOption, "lower");
   const auto upper = option(kUpperOption, "upper");
@@ -664,6 +666,9 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
   ReplaceOption(
     args[dimensions + kLevelStepOption],
     duckdb::Value::INTEGER(static_cast<int32_t>(options.level_step)));
+  ReplaceOption(
+    args[dimensions + kMaxCellsOption],
+    duckdb::Value::INTEGER(static_cast<int32_t>(options.max_cells)));
   if (!normalized) {
     ReplaceOption(args[dimensions + kLowerOption], duckdb::Value{});
     ReplaceOption(args[dimensions + kUpperOption], duckdb::Value{});
