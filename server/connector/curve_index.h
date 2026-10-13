@@ -116,8 +116,10 @@ class CurveTokenizer final
       sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
     };
     if (_options.cartesian) {
+      auto shape = _options;
+      shape.max_cells = _options.shape_cells;
       irs::curve::CellTerms(
-        CoverCartesian({value.GetData(), value.GetSize()}, _options), _options,
+        CoverCartesian({value.GetData(), value.GetSize()}, shape), _options,
         false, emit);
       return true;
     }

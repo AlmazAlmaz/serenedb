@@ -144,7 +144,17 @@ The opclass requires parentheses, and its options are stored with the index:
 | --- | --- | --- |
 | `kind` | `'morton'` | `'morton'` or `'hilbert'`. |
 | `max_level` | `64` | 0 through 64 coordinate bits used for cells. Smaller values reduce depth and precision. Level 0 is the whole domain. |
-| `max_cells` | `64` | 1 through 4096 covering cells, bounded separately for each indexed shape and each query. |
+| `max_cells` | `64` | 1 through 4096 covering cells per query shape. |
+| `shape_cells` | `16` | 1 through 4096 covering cells per indexed shape. |
+
+The candidates of a query come mostly from the query's own covering, and every
+candidate pays a Boost.Geometry check, while the cells of the indexed shapes
+cost build time and space. On 100,000 small polygons and 8,192 diagonal lines,
+16 cells per shape instead of 64 built the index in 2.4 s instead of 6.2 s,
+with 75 MB instead of 132 MB. Boxes and lines took as long within 8%, and a
+line across the whole area ran in 45 ms either way, against 178 ms with a
+bounding-box index; a point among the long lines read 771 candidates instead
+of 129 and took 1.05 to 1.19 ms instead of 0.99 ms.
 
 Points, lines, polygons and their multi variants use an XY covering. Z and M are
 preserved in storage and ignored by the covering and the existing planar
@@ -195,7 +205,8 @@ within the shape's bounds (length for an axis-aligned line), so tiny floating
 point intervals near zero do not use up the budget before useful larger cells.
 Each covering cell of an indexed shape writes a leaf term, and each of its
 ancestors writes one ancestor term; a query cell matches indexed ancestors and
-descendants. The terms are bounded by `max_cells * (max_level + 1)` before
+descendants. The terms are bounded by `shape_cells * (max_level + 1)` for an
+indexed shape and `max_cells * (max_level + 2)` for a query before
 deduplication. A `curve(...)` point is always indexed at its full depth, so a
 box needs only one query term per covering cell, without the ancestor terms
 that shapes of varying depth need.

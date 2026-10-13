@@ -53,10 +53,10 @@ statement ok
 CREATE INDEX cartesian_fuzz_default ON cartesian_fuzz_shapes USING inverted(id, g cartesian());
 
 statement ok
-CREATE INDEX cartesian_fuzz_one ON cartesian_fuzz_shapes USING inverted(id, g cartesian(max_cells=1));
+CREATE INDEX cartesian_fuzz_one ON cartesian_fuzz_shapes USING inverted(id, g cartesian(max_cells=1, shape_cells=1));
 
 statement ok
-CREATE INDEX cartesian_fuzz_fine ON cartesian_fuzz_shapes USING inverted(id, g cartesian(kind='hilbert', max_cells=1024));
+CREATE INDEX cartesian_fuzz_fine ON cartesian_fuzz_shapes USING inverted(id, g cartesian(kind='hilbert', max_cells=1024, shape_cells=1024));
 
 statement ok
 CREATE INDEX cartesian_fuzz_mixed ON cartesian_fuzz_collections USING inverted(id, g cartesian());

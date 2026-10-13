@@ -27,7 +27,7 @@ statement ok
 CREATE INDEX cartesian_morton ON cartesian_shapes USING inverted(id, g cartesian(max_cells=32));
 
 statement ok
-CREATE INDEX cartesian_hilbert ON cartesian_shapes USING inverted(id, g cartesian(kind='hilbert', max_cells=1));
+CREATE INDEX cartesian_hilbert ON cartesian_shapes USING inverted(id, g cartesian(kind='hilbert', max_cells=1, shape_cells=1));
 
 statement ok
 VACUUM (REFRESH_TABLE) cartesian_shapes;
@@ -256,7 +256,13 @@ db error: ERROR: Column 'id': cartesian opclass requires GEOMETRY('SDB:CARTESIAN
 statement error
 CREATE INDEX wrong_cartesian ON cartesian_shapes USING inverted(g cartesian(curve='hilbert'));
 ----
-db error: ERROR: Column 'g': unknown cartesian option 'curve'. Accepted options: kind (string: morton|hilbert, default morton), max_level (int 0-64, default 64), max_cells (int 1-4096, default 64)
+db error: ERROR: Column 'g': unknown cartesian option 'curve'. Accepted options: kind (string: morton|hilbert, default morton), max_level (int 0-64, default 64), max_cells (int 1-4096, default 64), shape_cells (int 1-4096, default 16)
+
+
+statement error
+CREATE INDEX wrong_cartesian ON cartesian_shapes USING inverted(g cartesian(shape_cells=0));
+----
+db error: ERROR: Column 'g': cartesian option 'shape_cells' must be between 1 and 4096, got 0
 
 
 statement error

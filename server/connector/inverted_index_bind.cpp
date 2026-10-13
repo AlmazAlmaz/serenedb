@@ -644,6 +644,7 @@ void ApplyCartesianOpclass(
   constexpr std::string_view kKindField = "kind";
   constexpr std::string_view kMaxLevelField = "max_level";
   constexpr std::string_view kMaxCellsField = "max_cells";
+  constexpr std::string_view kShapeCellsField = "shape_cells";
   constexpr std::string_view kMorton = "morton";
   constexpr std::string_view kHilbert = "hilbert";
   const auto kind = catalog::kCartesianKind;
@@ -655,6 +656,9 @@ void ApplyCartesianOpclass(
     } else if (key == kMaxCellsField) {
       options.max_cells = ParseCartesianLimitOption(owner_label, key, raw_val,
                                                     1, irs::curve::kMaxCells);
+    } else if (key == kShapeCellsField) {
+      options.shape_cells = ParseCartesianLimitOption(owner_label, key, raw_val,
+                                                      1, irs::curve::kMaxCells);
     } else if (key == kKindField) {
       auto curve = GetIndexStringOption(kind, owner_label, key, raw_val);
       absl::AsciiStrToLower(&curve);
@@ -668,13 +672,14 @@ void ApplyCartesianOpclass(
     } else {
       THROW_SQL_ERROR(
         ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
-        ERR_MSG("Column '", owner_label, "': unknown ", kind, " option '", key,
-                "'. Accepted options: kind (string: ", kMorton, "|", kHilbert,
-                ", default ", kMorton, "), max_level (int 0-",
-                irs::curve::kMaxLevel, ", default ",
-                irs::curve::Options{}.max_level, "), max_cells (int 1-",
-                irs::curve::kMaxCells, ", default ",
-                irs::curve::Options{}.max_cells, ")"));
+        ERR_MSG(
+          "Column '", owner_label, "': unknown ", kind, " option '", key,
+          "'. Accepted options: kind (string: ", kMorton, "|", kHilbert,
+          ", default ", kMorton, "), max_level (int 0-", irs::curve::kMaxLevel,
+          ", default ", irs::curve::Options{}.max_level, "), max_cells (int 1-",
+          irs::curve::kMaxCells, ", default ", irs::curve::Options{}.max_cells,
+          "), shape_cells (int 1-", irs::curve::kMaxCells, ", default ",
+          irs::curve::Options{}.shape_cells, ")"));
     }
   }
   entry.curve = options;

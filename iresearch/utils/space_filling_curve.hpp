@@ -56,6 +56,7 @@ struct Options {
   bool hilbert = false;
   uint32_t level_step = 1;
   bool cartesian = false;
+  uint32_t shape_cells = 16;
 
   bool operator==(const Options&) const = default;
 };
@@ -77,12 +78,13 @@ inline void Validate(const Options& options) {
       options.max_level > kMaxLevel || options.max_cells == 0 ||
       options.max_cells > kMaxCells || options.level_step == 0 ||
       options.level_step > MaxLevelStep(options.dimensions) ||
+      options.shape_cells == 0 || options.shape_cells > kMaxCells ||
       (options.cartesian &&
        (options.dimensions != 2 || options.level_step != 1))) {
     throw std::invalid_argument(
       "curve: dimensions must be 2..8 (Cartesian: 2), "
-      "max_level 0..64, max_cells 1..4096, level_step 1..1+12/dimensions "
-      "(Cartesian: 1)");
+      "max_level 0..64, max_cells and shape_cells 1..4096, "
+      "level_step 1..1+12/dimensions (Cartesian: 1)");
   }
 }
 
