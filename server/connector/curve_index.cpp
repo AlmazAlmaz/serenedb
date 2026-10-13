@@ -107,6 +107,52 @@ uint32_t IntegerWidth(duckdb::LogicalTypeId type) {
   }
 }
 
+uint64_t SignedKey(int64_t value, uint32_t width) noexcept {
+  return (static_cast<uint64_t>(value) + (uint64_t{1} << (width - 1)))
+         << (64 - width);
+}
+
+uint64_t UnsignedKey(uint64_t value, uint32_t width) noexcept {
+  return value << (64 - width);
+}
+
+uint32_t KeyWidth(const CurveAxis& axis) noexcept {
+  switch (axis.family) {
+    case CurveFamily::Signed:
+    case CurveFamily::Unsigned:
+    case CurveFamily::Date:
+      return IntegerWidth(axis.type.id());
+    default:
+      return 64;
+  }
+}
+
+uint32_t KeyShift(const CurveAxis& axis) noexcept {
+  if (axis.family == CurveFamily::Inet) {
+    return axis.normalized && axis.key_hi < irs::curve::kSignBit ? 31 : 0;
+  }
+  return 64 - KeyWidth(axis);
+}
+
+uint32_t AxisBits(const CurveAxis& axis) noexcept {
+  if (axis.family == CurveFamily::Null) {
+    return 0;
+  }
+  if (!axis.normalized) {
+    return 64 - KeyShift(axis);
+  }
+  if (axis.ipv6_range) {
+    const auto span = axis.ipv6_hi - axis.ipv6_lo;
+    return absl::Uint128High64(span) == 0
+             ? std::bit_width(absl::Uint128Low64(span))
+             : 64;
+  }
+  if (axis.family == CurveFamily::Float) {
+    return 64;
+  }
+  return std::bit_width(axis.key_hi - axis.key_lo) - KeyShift(axis);
+}
+
 uint64_t InetKey(uint8_t ip_type, duckdb::hugeint_t address) noexcept {
   if (ip_type == kInetV6) {
     return irs::curve::kSignBit |
@@ -174,38 +220,47 @@ bool IsUnsignedInteger(duckdb::LogicalTypeId type) {
          type == UBIGINT;
 }
 
-std::optional<RawBound> ToRaw(CurveFamily family, const duckdb::Value& bound) {
+std::optional<RawBound> ToRaw(const CurveAxis& axis,
+                              const duckdb::Value& bound) {
   using enum duckdb::LogicalTypeId;
   const auto type = bound.type().id();
   const bool is_signed = IsSignedInteger(type);
   const bool is_unsigned = IsUnsignedInteger(type);
-  switch (family) {
-    case CurveFamily::Signed:
+  const auto width = KeyWidth(axis);
+  switch (axis.family) {
+    case CurveFamily::Signed: {
+      const auto max = std::numeric_limits<int64_t>::max() >> (64 - width);
       if (is_signed) {
-        return RawBound{
-          .key = irs::curve::EncodeSigned(bound.GetValue<int64_t>()),
-          .exact = true};
+        const auto value = bound.GetValue<int64_t>();
+        const auto clamped = std::clamp(value, -max - 1, max);
+        return RawBound{.key = SignedKey(clamped, width),
+                        .exact = clamped == value};
       }
       if (is_unsigned) {
         const auto value = bound.GetValue<uint64_t>();
-        constexpr auto kMax =
-          static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-        return RawBound{.key = irs::curve::EncodeSigned(
-                          static_cast<int64_t>(std::min(value, kMax))),
-                        .exact = value <= kMax};
+        const auto limit = static_cast<uint64_t>(max);
+        return RawBound{
+          .key = SignedKey(static_cast<int64_t>(std::min(value, limit)), width),
+          .exact = value <= limit};
       }
       return std::nullopt;
-    case CurveFamily::Unsigned:
+    }
+    case CurveFamily::Unsigned: {
+      const auto max = std::numeric_limits<uint64_t>::max() >> (64 - width);
       if (is_unsigned) {
-        return RawBound{.key = bound.GetValue<uint64_t>(), .exact = true};
+        const auto value = bound.GetValue<uint64_t>();
+        return RawBound{.key = UnsignedKey(std::min(value, max), width),
+                        .exact = value <= max};
       }
       if (is_signed) {
         const auto value = bound.GetValue<int64_t>();
-        return RawBound{
-          .key = static_cast<uint64_t>(std::max<int64_t>(value, 0)),
-          .exact = value >= 0};
+        const auto clamped =
+          value < 0 ? 0 : std::min(static_cast<uint64_t>(value), max);
+        return RawBound{.key = UnsignedKey(clamped, width),
+                        .exact = static_cast<uint64_t>(value) == clamped};
       }
       return std::nullopt;
+    }
     case CurveFamily::Float:
       if (type == FLOAT || type == DOUBLE) {
         return RawBound{.value = bound.GetValue<double>(), .exact = true};
@@ -235,7 +290,7 @@ std::optional<RawBound> ToRaw(CurveFamily family, const duckdb::Value& bound) {
         return std::nullopt;
       }
       return RawBound{
-        .key = irs::curve::EncodeSigned(bound.GetValue<duckdb::date_t>().days),
+        .key = SignedKey(bound.GetValue<duckdb::date_t>().days, width),
         .exact = true};
     case CurveFamily::Timestamp:
       if (type != TIMESTAMP) {
@@ -310,8 +365,11 @@ uint64_t AxisKey(const CurveAxis& axis,
   using enum duckdb::LogicalTypeId;
   const auto& unified = format.unified;
   const auto index = unified.sel->get_index(row);
-  const auto signed_key = [&](int64_t value) {
-    return MapKey(axis, irs::curve::EncodeSigned(value));
+  const auto signed_key = [&](int64_t value, uint32_t width) {
+    return MapKey(axis, SignedKey(value, width));
+  };
+  const auto unsigned_key = [&](uint64_t value, uint32_t width) {
+    return MapKey(axis, UnsignedKey(value, width));
   };
   if (axis.family == CurveFamily::Inet) {
     const auto& type = format.children[0].unified;
@@ -323,24 +381,24 @@ uint64_t AxisKey(const CurveAxis& axis,
   }
   switch (axis.type.id()) {
     case TINYINT:
-      return signed_key(Load<int8_t>(unified, index));
+      return signed_key(Load<int8_t>(unified, index), 8);
     case SMALLINT:
-      return signed_key(Load<int16_t>(unified, index));
+      return signed_key(Load<int16_t>(unified, index), 16);
     case INTEGER:
     case DATE:
-      return signed_key(Load<int32_t>(unified, index));
+      return signed_key(Load<int32_t>(unified, index), 32);
     case BIGINT:
     case TIMESTAMP:
     case TIMESTAMP_TZ:
-      return signed_key(Load<int64_t>(unified, index));
+      return signed_key(Load<int64_t>(unified, index), 64);
     case UTINYINT:
-      return MapKey(axis, Load<uint8_t>(unified, index));
+      return unsigned_key(Load<uint8_t>(unified, index), 8);
     case USMALLINT:
-      return MapKey(axis, Load<uint16_t>(unified, index));
+      return unsigned_key(Load<uint16_t>(unified, index), 16);
     case UINTEGER:
-      return MapKey(axis, Load<uint32_t>(unified, index));
+      return unsigned_key(Load<uint32_t>(unified, index), 32);
     case UBIGINT:
-      return MapKey(axis, Load<uint64_t>(unified, index));
+      return unsigned_key(Load<uint64_t>(unified, index), 64);
     case FLOAT:
       return MapDouble(axis, Load<float>(unified, index));
     case DOUBLE:
@@ -454,11 +512,11 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
       return;
     }
   }
-  const auto lo = ToRaw(axis.family, *lower);
+  const auto lo = ToRaw(axis, *lower);
   if (!lo) {
     ThrowBoundMismatch("lower bound", *lower, index, axis);
   }
-  const auto hi = ToRaw(axis.family, *upper);
+  const auto hi = ToRaw(axis, *upper);
   if (!hi) {
     ThrowBoundMismatch("upper bound", *upper, index, axis);
   }
@@ -497,7 +555,7 @@ std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
     }
     return CurveKey{.key = InetAxisKey(axis, *inet)};
   }
-  const auto raw = ToRaw(axis.family, bound);
+  const auto raw = ToRaw(axis, bound);
   if (!raw) {
     return std::nullopt;
   }
@@ -505,6 +563,7 @@ std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
   return CurveKey{.key = axis.family == CurveFamily::Float
                            ? MapDouble(axis, raw->value)
                            : MapKey(axis, raw->key),
+                  .step = uint64_t{1} << KeyShift(axis),
                   .exact = raw->exact && injective};
 }
 
@@ -513,33 +572,13 @@ CurveInterval CurveLimits(const CurveAxis& axis) noexcept {
   if (axis.normalized) {
     return {.max = kMax};
   }
-  switch (axis.family) {
-    case CurveFamily::Float:
-      return {
-        .min =
-          irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
-        .max =
-          irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN()),
-      };
-    case CurveFamily::Signed:
-    case CurveFamily::Date: {
-      const auto width = IntegerWidth(axis.type.id());
-      if (width == 64) {
-        return {.max = kMax};
-      }
-      const auto half = uint64_t{1} << (width - 1);
-      return {
-        .min = irs::curve::kSignBit - half,
-        .max = irs::curve::kSignBit + half - 1,
-      };
-    }
-    case CurveFamily::Unsigned: {
-      const auto width = IntegerWidth(axis.type.id());
-      return {.max = width == 64 ? kMax : (uint64_t{1} << width) - 1};
-    }
-    default:
-      return {.max = kMax};
+  if (axis.family == CurveFamily::Float) {
+    return {
+      .min = irs::curve::EncodeDouble(-std::numeric_limits<double>::infinity()),
+      .max = irs::curve::EncodeDouble(std::numeric_limits<double>::quiet_NaN()),
+    };
   }
+  return {.max = kMax << KeyShift(axis)};
 }
 
 duckdb::unique_ptr<duckdb::FunctionData> CurveSpec::Copy() const {
@@ -589,8 +628,11 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
                             "' or '", kHilbertCurve, "', got '", curve, "'"));
   }
   options.hilbert = curve == kHilbertCurve;
-  options.max_level = LimitOption(option(kMaxLevelOption, "max_level"),
-                                  "max_level", 0, irs::curve::kMaxLevel);
+  const auto max_level = option(kMaxLevelOption, "max_level");
+  if (!max_level.IsNull()) {
+    options.max_level =
+      LimitOption(max_level, "max_level", 0, irs::curve::kMaxLevel);
+  }
   const auto step = option(kLevelStepOption, "level_step");
   options.level_step =
     step.IsNull() ? irs::curve::DefaultLevelStep(options.dimensions)
@@ -608,7 +650,17 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
               BoundComponent(upper, "upper", axis, options.dimensions));
     normalized |= spec->axes[axis].normalized;
   }
+  if (max_level.IsNull()) {
+    options.max_level = 0;
+    for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
+      options.max_level =
+        std::max(options.max_level, AxisBits(spec->axes[axis]));
+    }
+  }
   ReplaceOption(args[dimensions + kKindOption], duckdb::Value{curve});
+  ReplaceOption(
+    args[dimensions + kMaxLevelOption],
+    duckdb::Value::INTEGER(static_cast<int32_t>(options.max_level)));
   ReplaceOption(
     args[dimensions + kLevelStepOption],
     duckdb::Value::INTEGER(static_cast<int32_t>(options.level_step)));

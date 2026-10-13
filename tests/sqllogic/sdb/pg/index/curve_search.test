@@ -3,7 +3,30 @@ SELECT hex(curve(1, 2)) AS morton, hex(curve(1, 2, kind := 'hilbert', max_level 
  octet_length(curve(1, 2, 3)) AS bytes, octet_length(curve(1, 2, 3, max_level := 3)) AS short;
 ----
 morton	hilbert	bytes	short
-C0000000000000000000000000000006	8000	24	2
+C000000000000006	8000	12	2
+
+query
+SELECT octet_length(curve(1::TINYINT, 2::SMALLINT)) AS small,
+ octet_length(curve(DATE '2026-01-01', 1::UTINYINT)) AS date,
+ octet_length(curve(1, 2.5::DOUBLE)) AS double,
+ octet_length(curve(5::BIGINT, 7::BIGINT, lower := ROW(0, 0), upper := ROW(100, 1000))) AS scaled,
+ octet_length(curve(TIMESTAMP '2026-01-01 12:00', 0::TINYINT,
+   lower := ROW(TIMESTAMP '2026-01-01', NULL), upper := ROW(TIMESTAMP '2026-01-02', NULL))) AS day,
+ octet_length(curve('10.0.1.2'::INET, 0::TINYINT,
+   lower := ROW('10.0.0.0'::INET, NULL), upper := ROW('10.0.255.255'::INET, NULL))) AS ipv4,
+ octet_length(curve('2001:db8::1:2'::INET, 0::TINYINT,
+   lower := ROW('2001:db8::'::INET, NULL), upper := ROW('2001:db8::ffff:ffff'::INET, NULL))) AS ipv6;
+----
+small	date	double	scaled	day	ipv4	ipv6
+4	8	16	3	10	4	8
+
+query
+SELECT hex(curve(1::TINYINT, 2::TINYINT)) = hex(curve(1::TINYINT, 2::TINYINT, max_level := 8)) AS same,
+ hex(curve(1, 2, max_level := NULL)) = hex(curve(1, 2)) AS null_default,
+ hex(curve((-128)::TINYINT, 127::TINYINT)) AS corners;
+----
+same	null_default	corners
+t	t	5555
 
 query
 SELECT curve(NULL, 1) IS NULL AS n, curve(1, NULL::DOUBLE) IS NULL AS component;
@@ -232,12 +255,6 @@ db error: ERROR: curve(): option "max_level" must be between 0 and 64, got 65
 
 
 statement error
-SELECT curve(1, 2, max_level := NULL);
-----
-db error: ERROR: curve(): option "max_level" must be between 0 and 64, got NULL
-
-
-statement error
 SELECT curve(1, 2, max_cells := 0);
 ----
 db error: ERROR: curve(): option "max_cells" must be between 1 and 4096, got 0
@@ -261,7 +278,7 @@ SELECT curve(x, y, max_cells := id) FROM curve_points;
 db error: ERROR: curve(): option "max_cells" must be a constant
 
 
-statement error curve\(\*coordinates ANY, kind VARCHAR := morton, max_level INTEGER := 64, level_step INTEGER := NULL, max_cells INTEGER := 64, lower ANY := NULL, upper ANY := NULL\) -> BLOB
+statement error curve\(\*coordinates ANY, kind VARCHAR := morton, max_level INTEGER := NULL, level_step INTEGER := NULL, max_cells INTEGER := 64, lower ANY := NULL, upper ANY := NULL\) -> BLOB
 SELECT curve(1, 2, level := 3);
 
 statement error

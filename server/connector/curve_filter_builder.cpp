@@ -137,22 +137,22 @@ void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
 
 void RaiseMin(uint64_t& min, CurveKey bound, bool inclusive, bool& empty) {
   if (!inclusive && bound.exact) {
-    if (bound.key == std::numeric_limits<uint64_t>::max()) {
+    if (bound.key > std::numeric_limits<uint64_t>::max() - bound.step) {
       empty = true;
       return;
     }
-    ++bound.key;
+    bound.key += bound.step;
   }
   min = std::max(min, bound.key);
 }
 
 void LowerMax(uint64_t& max, CurveKey bound, bool inclusive, bool& empty) {
   if (!inclusive && bound.exact) {
-    if (bound.key == 0) {
+    if (bound.key < bound.step) {
       empty = true;
       return;
     }
-    --bound.key;
+    bound.key -= bound.step;
   }
   max = std::min(max, bound.key);
 }
