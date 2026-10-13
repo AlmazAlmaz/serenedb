@@ -47,6 +47,7 @@
 #include "replication/subscription_engine.h"
 #include "rest_server/database_path_feature.h"
 #include "scheduler/background_scheduler.h"
+#include "scheduler/job_scheduler.h"
 #include "server/utils/app_server.h"
 #include "server/utils/build.h"
 #include "server/utils/init.h"
@@ -83,6 +84,7 @@ int RunServer(int argc, char** argv) {
     search::SearchEngine search;
     Server network;
     std::optional<replication::SubscriptionEngine> subscriptions;
+    JobScheduler jobs;
 
     // Lifecycle is two explicit, flat lists: bring features UP in dependency
     // order, then take them DOWN in a dependency order that is deliberately
@@ -137,6 +139,7 @@ int RunServer(int argc, char** argv) {
         // goes down.
         stop("network", [&] { network.stop(); });
       }
+      stop("jobs", [&] { jobs.Stop(); });
       if (up_search) {
         stop("search", [&] { search.stop(); });
       }
@@ -166,6 +169,7 @@ int RunServer(int argc, char** argv) {
     background.OpenDelays();
     search.start();
     up_search = true;
+    jobs.Start();
     if (const auto bootstrapped = docs::RunDocsBootstrap()) {
       return *bootstrapped;
     }
