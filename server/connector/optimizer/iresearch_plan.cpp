@@ -1192,6 +1192,12 @@ bool ClaimSearchConjuncts(
   }
   connector::FilterScorers filter_scorers;
   for (size_t i = 0; i < filters.size();) {
+    if (connector::AddCartesianCandidates(*root_and, *filters[i], getter,
+                                          expr_getter, context)) {
+      any_claimed = true;
+      ++i;
+      continue;
+    }
     if (connector::ClaimCurveMatch(*root_and, filters, i, expr_getter,
                                    context)) {
       any_claimed = true;

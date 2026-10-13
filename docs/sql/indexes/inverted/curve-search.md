@@ -1,5 +1,5 @@
 ---
-title: Multidimensional Search
+title: Multidimensional and Cartesian Search
 sidebar_position: 10
 split: headings
 ---
@@ -8,7 +8,9 @@ import SqlLogicTest from "@site/src/components/SqlLogicTest";
 
 `curve(...)` maps two to eight values to a position on a space-filling curve.
 An inverted index on that expression answers multidimensional range queries
-with bounded coverings and an exact check of the candidates.
+with bounded coverings and an exact check of the candidates. The
+`cartesian(...)` opclass indexes straight-edge geometry on the same cells, see
+[Cartesian geometry](#cartesian-geometry).
 
 ## The curve function
 
@@ -127,6 +129,68 @@ one /64 subnet, a box matching 239 rows produced 4,016 candidates without the
 range and 1,251 with `lower := ROW('2001:db8:1::'::INET, NULL)` and
 `upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL)`.
 
+## Cartesian geometry
+
+Declare the explicit local coordinate system `GEOMETRY('SDB:CARTESIAN')` and use
+the `cartesian(...)` opclass. Coordinates are interpreted directly in the units
+of the application. The declaration does not transform coordinates or recognize
+arbitrary EPSG systems as Cartesian.
+
+<SqlLogicTest id="sql/indexes/inverted/curve-search/shapes" />
+
+The opclass requires parentheses, and its options are stored with the index:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `kind` | `'morton'` | `'morton'` or `'hilbert'`. |
+| `max_level` | `64` | 0 through 64 coordinate bits used for cells. Smaller values reduce depth and precision. Level 0 is the whole domain. |
+| `max_cells` | `64` | 1 through 4096 covering cells per query shape. |
+| `shape_cells` | `16` | 1 through 4096 covering cells per indexed shape. |
+
+The candidates of a query come mostly from the query's own covering, and every
+candidate pays a Boost.Geometry check, while the cells of the indexed shapes
+cost build time and space. On 100,000 small polygons and 8,192 diagonal lines,
+16 cells per shape instead of 64 built the index in 2.4 s instead of 6.2 s,
+with 75 MB instead of 132 MB. Boxes and lines took as long within 8%, and a
+line across the whole area ran in 45 ms either way, against 178 ms with a
+bounding-box index; a point among the long lines read 771 candidates instead
+of 129 and took 1.05 to 1.19 ms instead of 0.99 ms.
+
+Points, lines, polygons and their multi variants use an XY covering. Z and M are
+preserved in storage and ignored by the covering and the existing planar
+predicates. Three-dimensional topology and distances are outside this index's
+scope. Use a three-coordinate `curve(...)` for a three-dimensional point box.
+
+The index accelerates positive `ST_Intersects`, `ST_Contains`, `ST_Within`,
+`ST_Covers`, `ST_CoveredBy`, `ST_Touches`, `ST_Crosses` and `ST_Overlaps` calls
+with an indexed geometry on either side and a constant geometry on the other.
+Every supported predicate has a candidate-plus-recheck guarantee: the original
+predicate remains in the DuckDB plan and runs on the stored source geometry.
+The current spatial extension uses Boost.Geometry for that check, with its
+existing boundary, validity and geometry-collection behavior.
+
+Empty shapes produce no terms. An empty query, `ST_Equals`, `ST_Disjoint`,
+distance predicates and negation use the scalar path. Geometry collections can
+be covered for `ST_Intersects`; the scalar extension's restrictions still apply
+to the other predicates. Invalid or degenerate shapes receive a root covering
+instead of trusting topology-based pruning. Shapes with nonfinite XY
+coordinates or coordinate magnitudes above `1e100` also receive a root
+covering, so every query rechecks them.
+
+The covering follows the exact geometry, while Boost.Geometry compares
+coordinates and orientations with a tolerance relative to the coordinates
+that never drops below about `2.2e-16` in absolute terms. Below a magnitude
+of 1 the predicates can therefore report contact between shapes that are
+slightly apart, and the index can miss such rows that a scan returns: a point
+`2e-9` away from a segment `1.4e-8` long touches it for Boost, and so does
+`POINT(1e-16 0)` for `POINT(0 0)`. At larger magnitudes the tolerance stays
+below the few ulps by which every covering cell is widened.
+
+The geographic `encode_geojson` and `encode_geopoint` dictionaries continue to
+use S2 and their existing CRS84 contract. They reject `SDB:CARTESIAN`; the
+Cartesian opclass rejects CRS84. The two paths do not reinterpret each other's
+index terms.
+
 ## Coverings
 
 Covering considers both interior and boundary cells. When refining a cell would
@@ -135,6 +199,17 @@ than truncated, so reducing the budget cannot lose matches. The cell budget is
 not a limit on returned documents: a coarse cover can require checking every
 row. An open side leaves that axis unconstrained, and every cell constrains all
 axes at once, so a box that is open on most axes prunes little.
+
+Cartesian refinement takes the largest cells first by coordinate-space area
+within the shape's bounds (length for an axis-aligned line), so tiny floating
+point intervals near zero do not use up the budget before useful larger cells.
+Each covering cell of an indexed shape writes a leaf term, and each of its
+ancestors writes one ancestor term; a query cell matches indexed ancestors and
+descendants. The terms are bounded by `shape_cells * (max_level + 1)` for an
+indexed shape and `max_cells * (max_level + 2)` for a query before
+deduplication. A `curve(...)` point is always indexed at its full depth, so a
+box needs only one query term per covering cell, without the ancestor terms
+that shapes of varying depth need.
 
 A point writes a term for each indexed level: every `level_step`-th level and
 `max_level`, `max_level / level_step + 2` terms at most. Most of the levels hold
@@ -150,7 +225,8 @@ at no more than 16 terms per cell: 3 for two dimensions, 2 for three and four,
 and 1 from five dimensions up. On one million three-dimensional points a step
 of 2 builds the index in 56 to 59% of the time of a step of 1 with queries at
 most 12% slower, while a step of 3 builds faster still but turns a 64-cell
-cover into up to 1,233 query terms.
+cover into up to 1,233 query terms. The `cartesian` opclass indexes shapes at
+the depth of their covering cells and always uses every level.
 
 Every query term is a dictionary lookup and one more posting list to merge,
 while candidates read from a few long posting lists are cheap to recheck, so a
@@ -228,8 +304,10 @@ scan. Correlated data narrows the gap: per-column ranges win small correlated
 boxes, and wide correlated boxes lose to a scan. A box bounded on one of three
 axes took 2.8 ms against a 1.9 ms scan of one million points. At the default
 depth the index costs five to seven times the build time and four to five
-times the size of a per-column index. Benchmark the application's own
-distributions before choosing a budget, a step or a depth.
+times the size of a per-column index. For Cartesian shapes the covering wins
+most for long or diagonal queries, whose bounding boxes overlap most shapes.
+Benchmark the application's own distributions before choosing a budget, a step
+or a depth.
 
 For a streaming index scan, `rows_scanned` in JSON profiling counts hits emitted
 by the posting filter after zonemap skipping and before
@@ -240,5 +318,5 @@ iterator advances, and a metadata-only count can avoid streaming entirely.
 The [lindel registry entry](https://duckdb.org/community_extensions/extensions/lindel)
 and [implementation](https://github.com/Query-farm/lindel/tree/v1.5/duckdb_lindel_rust)
 provide the prior-art reference for scalar Morton/Hilbert encoding. SereneDB
-does not load lindel: term generation, coverings,
+does not load lindel or DuckDB's R-tree index: term generation, coverings,
 budgets and candidate selection belong to the native index.
