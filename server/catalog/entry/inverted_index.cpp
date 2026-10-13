@@ -279,6 +279,11 @@ irs::ColumnOptions InvertedIndexConfig::GetColumnOptions(
   return {.skip_validity = true};
 }
 
+bool InvertedIndexConfig::TrimsCurveTerms(irs::field_id id) const {
+  const auto* entry = FindEntry(id);
+  return entry && entry->trim_curve_terms;
+}
+
 irs::field_id InvertedIndexConfig::GetNormColumnId(irs::field_id id) const {
   const auto it = fields.find(id);
   if (it == fields.end()) {

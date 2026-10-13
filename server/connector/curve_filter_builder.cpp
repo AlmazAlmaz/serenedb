@@ -29,6 +29,7 @@
 #include <duckdb/planner/expression/bound_function_expression.hpp>
 #include <duckdb/planner/expression/bound_operator_expression.hpp>
 #include <duckdb/planner/expression_binder.hpp>
+#include <iresearch/search/filters/term_ranges_filter.hpp>
 #include <iresearch/utils/down_cast.hpp>
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
@@ -138,13 +139,27 @@ void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
     root.Add(std::make_unique<irs::Empty>(), irs::Occur::Must);
     return;
   }
-  auto terms = irs::curve::PointQueryTerms(cells, box, options);
+  const auto query = irs::curve::PointQueryTerms(cells, box, options);
   auto candidates = std::make_unique<irs::BooleanFilter>();
   candidates->SetScorer(&irs::ForceConstScore());
-  for (const auto& term : terms) {
+  for (const auto& term : query.terms) {
     AddTerm({candidates.get(), irs::Occur::Should}, info.field_id,
             irs::ViewCast<irs::byte_type>(std::string_view{term}),
             irs::kNoBoost, &irs::ForceConstScore());
+  }
+  if (!query.leaves.empty()) {
+    auto& leaves =
+      AddFilter<irs::ByTermRanges>({candidates.get(), irs::Occur::Should});
+    *leaves.mutable_field_id() = info.field_id;
+    leaves.SetScorer(&irs::ForceConstScore());
+    auto& ranges = leaves.mutable_options()->ranges;
+    ranges.reserve(query.leaves.size());
+    for (const auto& leaf : query.leaves) {
+      ranges.emplace_back(
+        irs::bstring{irs::ViewCast<irs::byte_type>(std::string_view{leaf.min})},
+        irs::bstring{
+          irs::ViewCast<irs::byte_type>(std::string_view{leaf.max})});
+    }
   }
   SetMinMatch(*candidates, 1);
   root.Add(std::move(candidates), irs::Occur::Must);

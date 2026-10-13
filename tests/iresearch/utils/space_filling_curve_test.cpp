@@ -21,6 +21,7 @@
 #include <absl/algorithm/container.h>
 #include <gtest/gtest.h>
 
+#include <iresearch/utils/containers/flat_hash_map.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <pcg_random.hpp>
 #include <span>
@@ -136,14 +137,17 @@ std::vector<Point> EdgePoints(uint32_t dimensions) {
   return points;
 }
 
-bool Match(const std::vector<std::string>& indexed,
-           const std::vector<std::string>& query) {
-  for (const auto& term : indexed) {
-    if (absl::c_binary_search(query, term)) {
+bool Match(const std::vector<std::string>& indexed, const PointQuery& query) {
+  return absl::c_any_of(indexed, [&](const std::string& term) {
+    if (absl::c_binary_search(query.terms, term)) {
       return true;
     }
-  }
-  return false;
+    const auto leaf = absl::c_upper_bound(
+      query.leaves, term, [](const std::string& value, const LeafRange& range) {
+        return value < range.min;
+      });
+    return leaf != query.leaves.begin() && term <= std::prev(leaf)->max;
+  });
 }
 
 std::vector<std::string> IndexedPoint(const Point& point,
@@ -152,6 +156,30 @@ std::vector<std::string> IndexedPoint(const Point& point,
   PointTerms(point, options, [&](std::span<const uint8_t> term) {
     terms.emplace_back(term.begin(), term.end());
   });
+  return terms;
+}
+
+std::vector<std::vector<std::string>> TrimmedSegment(
+  std::span<const Point> points, const Options& options) {
+  std::vector<std::vector<std::string>> terms;
+  containers::FlatHashMap<std::string, size_t> docs;
+  for (const auto& point : points) {
+    terms.push_back(IndexedPoint(point, options));
+    for (const auto& term : terms.back()) {
+      ++docs[term];
+    }
+  }
+  for (auto& own : terms) {
+    for (size_t i = 0; i < own.size(); ++i) {
+      if (own[i][0] == kAncestorTerm && docs[own[i]] == 1) {
+        auto leaf = own.back();
+        leaf[2] = own[i][2];
+        own.resize(i);
+        own.push_back(std::move(leaf));
+        break;
+      }
+    }
+  }
   return terms;
 }
 
@@ -403,7 +431,7 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
             const auto cover = CoverBox(box, options);
             ASSERT_LE(cover.size(), budget);
             const auto query = PointQueryTerms(cover, box, options);
-            EXPECT_LE(query.size(), budget << (dimensions * (step - 1)));
+            EXPECT_LE(query.terms.size(), budget << (dimensions * (step - 1)));
             for (const auto& point : {box.min, box.max, inside}) {
               EXPECT_TRUE(Match(IndexedPoint(point, options), query));
             }
@@ -470,8 +498,87 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
         const Box box{point, point};
         const auto query =
           PointQueryTerms(CoverBox(box, options), box, options);
-        ASSERT_EQ(query.size(), 1);
+        ASSERT_EQ(query.terms.size(), 1);
+        EXPECT_EQ(query.leaves.size(), (level + step - 1) / step);
         EXPECT_TRUE(Match(IndexedPoint(point, options), query));
+      }
+    }
+  }
+}
+
+TEST(SpaceFillingCurve, TrimmedSegmentsMatchLikeEveryLevel) {
+  pcg64 random{1317};
+  for (uint32_t dimensions : {2, 3, 5}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t step : {uint32_t{1}, DefaultLevelStep(dimensions),
+                            MaxLevelStep(dimensions)}) {
+        const Options options{
+          .dimensions = dimensions,
+          .max_cells = 16,
+          .hilbert = hilbert,
+          .level_step = step,
+        };
+        std::vector<Point> points;
+        for (uint32_t i = 0; i < 300; ++i) {
+          Point point;
+          point.fill(0);
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            point[axis] = i % 3 == 0
+                            ? random()
+                            : (uint64_t{1} << 63) + (random() >> (36 + i % 24));
+          }
+          points.push_back(point);
+          if (i % 17 == 0) {
+            points.push_back(point);
+          }
+        }
+        std::vector<std::vector<std::string>> full;
+        for (const auto& point : points) {
+          full.push_back(IndexedPoint(point, options));
+        }
+        for (size_t segments : {1, 7}) {
+          SCOPED_TRACE(segments);
+          std::vector<std::vector<std::string>> indexed(points.size());
+          for (size_t segment = 0; segment < segments; ++segment) {
+            std::vector<Point> own;
+            for (size_t i = segment; i < points.size(); i += segments) {
+              own.push_back(points[i]);
+            }
+            auto trimmed = TrimmedSegment(own, options);
+            for (size_t i = segment, j = 0; i < points.size();
+                 i += segments, ++j) {
+              indexed[i] = std::move(trimmed[j]);
+            }
+          }
+          size_t trimmed = 0;
+          for (const auto& own : indexed) {
+            trimmed += static_cast<uint8_t>(own.back()[2]) != options.max_level;
+          }
+          EXPECT_GT(trimmed, points.size() / 2);
+          for (uint32_t trial = 0; trial < 12; ++trial) {
+            const auto& center = points[random() % points.size()];
+            const auto span = random() >> (random() % 64);
+            Box box;
+            for (uint32_t axis = 0; axis < dimensions; ++axis) {
+              box.min[axis] = center[axis] > span ? center[axis] - span : 0;
+              box.max[axis] = UINT64_MAX - center[axis] > span
+                                ? center[axis] + span
+                                : UINT64_MAX;
+            }
+            const auto query =
+              PointQueryTerms(CoverBox(box, options), box, options);
+            for (size_t i = 0; i < points.size(); ++i) {
+              bool inside = true;
+              for (uint32_t axis = 0; axis < dimensions; ++axis) {
+                inside &= points[i][axis] >= box.min[axis] &&
+                          points[i][axis] <= box.max[axis];
+              }
+              const auto match = Match(indexed[i], query);
+              EXPECT_TRUE(match || !inside);
+              EXPECT_EQ(match, Match(full[i], query));
+            }
+          }
+        }
       }
     }
   }

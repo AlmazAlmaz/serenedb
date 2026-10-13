@@ -153,6 +153,7 @@ add_executable(
     search/sort_tests.cpp
     search/term_filter_tests.cpp
     search/term_predicate_test.cpp
+    search/term_ranges_filter_test.cpp
     search/terms_filter_test.cpp
     search/tfidf_test.cpp
     search/token_phrase_test.cpp
