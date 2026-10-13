@@ -29,6 +29,12 @@ id
 1
 
 query
+SELECT id FROM curve_option_identity_idx WHERE curve(x,y,max_level := 64) @@ ts_between(ROW(0,0),ROW(2,2),true,true);
+----
+id
+1
+
+query
 SELECT id FROM curve_option_identity_idx WHERE curve(x,y,lower := ROW(NULL,NULL),upper := ROW(NULL,NULL)) @@ ts_between(ROW(0,0),ROW(2,2),true,true);
 ----
 id

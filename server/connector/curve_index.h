@@ -47,6 +47,7 @@ enum class CurveFamily : uint8_t {
 
 struct CurveKey {
   uint64_t key = 0;
+  uint64_t step = 1;
   bool exact = false;
 };
 
