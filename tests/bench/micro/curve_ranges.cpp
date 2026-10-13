@@ -112,7 +112,7 @@ struct Sample {
     } else {
       const auto cover = CoverBox(query, options);
       cells = cover.size();
-      for (const auto& term : PointQueryTerms(cover, query, options)) {
+      for (const auto& term : PointQueryTerms(cover, query, options).terms) {
         const auto it = curve.find(term);
         if (it == curve.end()) {
           continue;

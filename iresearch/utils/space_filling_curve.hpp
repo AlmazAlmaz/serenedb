@@ -447,20 +447,93 @@ void PointTerms(const Point& point, const Options& options, Emit&& emit) {
   CodeTerms(std::span<const uint8_t>{code.data(), size}, options, emit);
 }
 
-inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
-                                                const Box& box,
-                                                const Options& options) {
+struct LeafRange {
+  std::string min;
+  std::string max;
+
+  auto operator<=>(const LeafRange&) const = default;
+};
+
+struct PointQuery {
   std::vector<std::string> terms;
+  std::vector<LeafRange> leaves;
+};
+
+namespace detail {
+
+inline std::string CodeBound(const Code& code, const Options& options,
+                             uint32_t level, uint8_t fill) {
+  std::string bound(CodeSize(options.dimensions, options.max_level),
+                    static_cast<char>(fill));
+  const auto bits = options.dimensions * level;
+  std::memcpy(bound.data(), code.data(), bits / 8);
+  if (bits % 8) {
+    const auto mask = static_cast<uint8_t>(0xff << (8 - bits % 8));
+    bound[bits / 8] =
+      static_cast<char>((code[bits / 8] & mask) | (fill & ~mask));
+  }
+  return bound;
+}
+
+inline bool Joins(const std::string& max, const std::string& min) {
+  auto next = max;
+  for (auto it = next.rbegin(); it != next.rend(); ++it) {
+    if (static_cast<uint8_t>(*it) != 0xff) {
+      *it = static_cast<char>(static_cast<uint8_t>(*it) + 1);
+      return min <= next;
+    }
+    *it = 0;
+  }
+  return true;
+}
+
+inline void Coalesce(std::vector<LeafRange>& ranges) {
+  absl::c_sort(ranges);
+  size_t size = 0;
+  for (size_t i = 0; i < ranges.size(); ++i) {
+    if (size != 0 && Joins(ranges[size - 1].max, ranges[i].min)) {
+      if (ranges[size - 1].max < ranges[i].max) {
+        ranges[size - 1].max = std::move(ranges[i].max);
+      }
+    } else if (size++ != i) {
+      ranges[size - 1] = std::move(ranges[i]);
+    }
+  }
+  ranges.resize(size);
+}
+
+}  // namespace detail
+
+inline PointQuery PointQueryTerms(std::span<const Cell> cells, const Box& box,
+                                  const Options& options) {
+  PointQuery query;
+  auto& terms = query.terms;
+  std::vector<LeafRange> spans;
   terms.reserve(cells.size());
   const auto add = [&](const Cell& cell) {
     const auto code = Encode(cell.min, options.dimensions, options.hilbert);
     terms.push_back(
       Term(code, options.dimensions, cell.level,
            cell.level == options.max_level ? kLeafTerm : kAncestorTerm));
+    spans.push_back({detail::CodeBound(code, options, cell.level, 0),
+                     detail::CodeBound(code, options, cell.level, 0xff)});
+  };
+  const auto leaves = [&](uint32_t level) {
+    detail::Coalesce(spans);
+    for (uint32_t leaf = 0; leaf <= level && leaf < options.max_level;
+         leaf += options.level_step) {
+      const std::string header{kLeafTerm, static_cast<char>(options.dimensions),
+                               static_cast<char>(leaf)};
+      for (const auto& span : spans) {
+        query.leaves.push_back({header + span.min, header + span.max});
+      }
+    }
+    spans.clear();
   };
   for (const auto& cell : cells) {
     if (IsIndexedLevel(cell.level, options)) {
       add(cell);
+      leaves(cell.level);
       continue;
     }
     const auto level =
@@ -482,10 +555,12 @@ inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
         add(child);
       }
     }
+    leaves(level);
   }
   absl::c_sort(terms);
   terms.erase(std::ranges::unique(terms).begin(), terms.end());
-  return terms;
+  detail::Coalesce(query.leaves);
+  return query;
 }
 
 }  // namespace irs::curve

@@ -110,12 +110,11 @@ be finite, while date and timestamp bounds can be infinite.
 On 10,000 points with `x` in `[0, 100)` and `y` in `[0, 10^9)`, a box matching
 220 rows produced 2,003 candidates without normalization and 234 with it. With
 DOUBLE values in `[1000, 1001]` and `max_level := 24`, the same box produced
-3,750 candidates without normalization and 239 with it. Normalization spends
-every level on the declared range, which also writes more distinct terms: on
-one million uniform DOUBLE points in `[0, 1000)` at `max_level := 32`, whose
-leading bits already separate the values, it did not speed up queries and grew
-the index from 100 MB to 167 MB. The bounds are part of the call, so the query
-repeats them.
+3,750 candidates without normalization and 239 with it. On one million uniform
+DOUBLE points in `[0, 1000)` at `max_level := 32`, whose leading bits already
+separate the values, normalization did not speed up queries, and the index took
+39 MB against 35 MB. The bounds are part of the call, so the query repeats
+them.
 
 ## INET coordinates
 
@@ -147,20 +146,35 @@ row. An open side leaves that axis unconstrained, and every cell constrains all
 axes at once, so a box that is open on most axes prunes little.
 
 A point writes a term for each indexed level: every `level_step`-th level and
-`max_level`, `max_level / level_step + 2` terms at most. Most of the levels hold
-no information for real data -- BIGINT columns of small values share their top
-levels in every row, and doubles reach one row per cell long before level 64 --
-so the step is the main control over index size and build time. The query cover
-is computed at full precision; a covering cell between two indexed levels is
+`max_level`, `max_level / level_step + 2` terms at most. When a segment is
+written, a row's terms stop at the first indexed level where the row is alone
+in its cell within that segment, and its leaf term keeps the row's full
+position together with that level. Doubles, timestamps and integers of a wide
+range reach one row per cell long before their last level, so most rows keep
+only a few terms. A query cell also reads, for its own indexed level and each
+one above it, the leaves whose position lies inside the cell, so it finds
+exactly the rows that every level would find: an index fed in small batches,
+whose segments are merged later, returns the same candidates as one built at
+once. An index created by a release without this trimming keeps every level
+until it is recreated. On ten million points the index of three DOUBLE
+coordinates took 568 MB instead of 3,949 MB, two INTEGER coordinates and a DATE
+361 MB instead of 769 MB, and INET with a TIMESTAMP 536 MB instead of
+1,557 MB. On fifty million points the DOUBLE index at `max_level := 40` took
+2,422 MB instead of 8,167 MB and compacted in 4 minutes instead of 23. One
+million points inserted in batches of 1,000 took 48 MB instead of 400 MB. The
+leaf lookups add at most 0.3 ms to a query on one million points. Every level
+is still buffered before a segment is written, so the step and the depth keep
+controlling build time and build memory. The query cover is computed at full
+precision; a covering cell between two indexed levels is
 replaced by its descendants on the next indexed level that intersect the box, at
 most `2^(dimensions * (level_step - 1))` terms per cell. The candidates are therefore
 never coarser than with `level_step = 1`, only the query carries more terms, and
 every query term is a term dictionary lookup. The default keeps that expansion
 at no more than 16 terms per cell: 3 for two dimensions, 2 for three and four,
-and 1 from five dimensions up. On one million three-dimensional points a step
-of 2 builds the index in 56 to 59% of the time of a step of 1 with queries at
-most 12% slower, while a step of 3 builds faster still but turns a 64-cell
-cover into up to 1,233 query terms.
+and 1 from five dimensions up. On one million three-dimensional DOUBLE points a
+step of 2 built the index in 1.50 s instead of 2.82 s at a step of 1 with
+queries at most 12% slower, while a step of 3 built in 1.10 s but turns a
+64-cell cover into up to 1,233 query terms.
 
 Every query term is a dictionary lookup and one more posting list to merge,
 while candidates read from a few long posting lists are cheap to recheck, so a
@@ -185,10 +199,10 @@ integer, date, timestamp or IPv4 axis the bits of its declared range, 7 for
 bits of its size, up to 64, and a normalized FLOAT or DOUBLE axis 64.
 `max_level := NULL` asks for the default, and an explicit value equal to the
 default names the same call. On one million points of two INTEGER coordinates
-and one DATE, the default depth of 32 built the index in 0.67 s instead of
-1.09 s at depth 64. Normalized to their ranges, the same coordinates took a
-depth of 20 and built in 0.39 s instead of 1.64 s, with an index of 85 MB
-instead of 503 MB. Both selected the same candidates as at depth 64.
+and one DATE, the default depth of 32 built the index in 0.64 s instead of
+2.23 s at depth 64. Normalized to their ranges, the same coordinates took a
+depth of 20 and built in 0.38 s. Both selected the same candidates as at
+depth 64.
 
 Doubles usually differ within their upper bits, because their ordered encoding
 starts with the sign and the exponent, so a shallower index often selects the
@@ -196,15 +210,15 @@ same candidates. Timestamps use signed integer keys, so their useful depth
 depends on the unit and the range of the data.
 On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
-range 1000 wide, with an index of 100 MB instead of 386 MB built in 0.61 s
-instead of 1.79 s. BIGINT is different: identifiers or counts far below `2^32`
+range 1000 wide, built in 0.58 s instead of 1.60 s and took 35 MB instead of
+46 MB, as a leaf keeps a row's position down to `max_level`. BIGINT is different: identifiers or counts far below `2^32`
 share their upper 32 bits, so at `max_level := 32` every row falls into the
 same cell and the index stops pruning. A box on one million BIGINT pairs read
-1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
-floating point and time coordinates whose values differ within that many bits,
-or declare `lower` and `upper` so that the leading bits cover the data; keep
-the default for unnormalized integer coordinates, and compare `rows_scanned` on
-the application's own boxes.
+1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` to build
+faster for floating point and time coordinates whose values differ within that
+many bits, or declare `lower` and `upper` so that the leading bits cover the
+data; keep the default for unnormalized integer coordinates, and compare
+`rows_scanned` on the application's own boxes.
 
 Which levels a query's cells fall on depends on the box size, so the number of
 query terms moves with it: a covering cell just below an indexed level becomes
@@ -218,7 +232,7 @@ Building an index buffers up to `segment_memory_max` per build worker (see
 terms per row than per-column fields. On ten million three-dimensional points
 the default build peaked at about 10.5 GB of RAM; `WITH (segment_memory_max =
 16777216)` kept it below 2 GB at the cost of a longer compaction to one segment,
-640 s instead of 96 s.
+62 s instead of 9 s.
 
 ## Choosing a curve
 
@@ -236,9 +250,11 @@ intersecting per-column ranges. A full scan of one million rows takes about
 million rows selective boxes run up to three and a half times faster than a
 scan. Correlated data narrows the gap: per-column ranges win small correlated
 boxes, and wide correlated boxes lose to a scan. A box bounded on one of three
-axes took 2.8 ms against a 1.9 ms scan of one million points. At the default
-depth the index costs five to seven times the build time and four to five
-times the size of a per-column index. Benchmark the application's own
+axes took 2.8 ms against a 1.9 ms scan of one million points. On one million
+points of three DOUBLE coordinates the index at the default depth built in
+1.50 s against 0.34 s for a per-column index and took 46 MB against 84 MB; on
+two INTEGER coordinates and a DATE it built in 0.64 s against 0.19 s and took
+33 MB against 24 MB. Benchmark the application's own
 distributions before choosing a budget, a step or a depth.
 
 For a streaming index scan, `rows_scanned` in JSON profiling counts hits emitted
