@@ -54,9 +54,8 @@ void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
     .AddArgs("coordinates", duckdb::LogicalType::ANY)
     .AddKeywordOnly("kind", duckdb::LogicalType::VARCHAR,
                     duckdb::Value{"morton"})
-    .AddKeywordOnly(
-      "max_level", duckdb::LogicalType::INTEGER,
-      duckdb::Value::INTEGER(static_cast<int32_t>(defaults.max_level)))
+    .AddKeywordOnly("max_level", duckdb::LogicalType::INTEGER,
+                    duckdb::Value{duckdb::LogicalType::INTEGER})
     .AddKeywordOnly("level_step", duckdb::LogicalType::INTEGER,
                     duckdb::Value{duckdb::LogicalType::INTEGER})
     .AddKeywordOnly(

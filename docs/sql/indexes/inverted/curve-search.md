@@ -20,14 +20,14 @@ coordinate is NULL. The options are named arguments with constant values:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `kind` | `'morton'` | `'morton'` or `'hilbert'`. |
-| `max_level` | `64` | 0 through 64 coordinate bits used for cells. Smaller values reduce depth and precision. Level 0 is the whole domain. |
+| `max_level` | the most bits a coordinate needs | 0 through 64 coordinate bits used for cells, see [Choosing a depth](#choosing-a-depth). Smaller values reduce depth and precision. Level 0 is the whole domain. |
 | `level_step` | `1 + 4 / dimensions` | 1 through `1 + 12 / dimensions`. An index writes a point at every `level_step`-th level and at `max_level`. |
 | `max_cells` | `64` | 1 through 4096 covering cells per query of an index on this call. |
 | `lower`, `upper` | NULL | `ROW(...)`s with one value per coordinate that normalize the axes, see [below](#axis-normalization). |
 
 Coordinates can be signed integers through BIGINT, unsigned integers through
 UBIGINT, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ and INET, and can be
-expressions over several columns. Integers keep all 64 bits; they are not
+expressions over several columns. Integers keep all their bits; they are not
 converted to floating point. Decimals, 128-bit integers and other timestamp
 resolutions need an explicit cast. Floating point values order as in SQL: NaN
 equals NaN and sorts above positive infinity, and negative zero equals positive
@@ -78,8 +78,10 @@ removes it.
 
 ## Axis normalization
 
-Each axis uses the complete ordered 64-bit representation of its type, and
-the cells split every axis at the same bits. When the values of an axis use a
+Each axis holds the complete ordered representation of its type in its leading
+bits: 8 for TINYINT and UTINYINT, 16 for SMALLINT and USMALLINT, 32 for
+INTEGER, UINTEGER and DATE, and 64 for the other types. The cells split every
+axis at the same bits. When the values of an axis use a
 small part of that range -- small integers next to large ones, or doubles in a
 narrow range far from zero, whose leading bits are the sign and the exponent
 -- most levels split nothing on that axis. `lower` and `upper` declare the
@@ -136,10 +138,11 @@ axes at once, so a box that is open on most axes prunes little.
 
 A point writes a term for each indexed level: every `level_step`-th level and
 `max_level`, `max_level / level_step + 2` terms at most. Most of the levels hold
-no information for real data -- integer columns share their top levels in every
-row, and doubles reach one row per cell long before level 64 -- so the step is
-the main control over index size and build time. The query cover is computed at
-full precision; a covering cell between two indexed levels is replaced by its
+no information for real data -- BIGINT columns of small values share their top
+levels in every row, and doubles reach one row per cell long before level 64 --
+so the step is the main control over index size and build time. The query cover
+is computed at full precision; a covering cell between two indexed levels is
+replaced by its
 descendants on the next indexed level that intersect the box, at most
 `2^(dimensions * (level_step - 1))` terms per cell. The candidates are therefore
 never coarser than with `level_step = 1`, only the query carries more terms, and
@@ -153,22 +156,42 @@ cover into up to 1,233 query terms.
 ## Choosing a depth
 
 `max_level` sets the number of coordinate bits of the deepest cell, and every
-indexed level writes one term per row. Doubles usually differ within their
-upper bits, because their ordered encoding starts with the sign and the
-exponent, so a shallower index often selects the same candidates. Dates and
-timestamps use signed integer keys, so their useful depth depends on the unit
-and the range of the data.
+indexed level writes one term per row. By default it is the most bits any
+coordinate needs, so the deepest cell still tells distinct values apart: 8, 16
+or 32 for TINYINT, SMALLINT, INTEGER, DATE and their unsigned forms, 64 for
+BIGINT, UBIGINT, timestamps, FLOAT, DOUBLE and INET, and for a normalized
+integer, date, timestamp or IPv4 axis the bits of its declared range, 7 for
+`[0, 100]` and 37 for one day of timestamps. A normalized IPv6 range needs the
+bits of its size, up to 64, and a normalized FLOAT or DOUBLE axis 64.
+`max_level := NULL` asks for the default, and an explicit value equal to the
+default names the same call. On one million points of two INTEGER coordinates
+and one DATE, the default depth of 32 built the index in 0.67 s instead of
+1.09 s at depth 64. Normalized to their ranges, the same coordinates took a
+depth of 20 and built in 0.39 s instead of 1.64 s, with an index of 85 MB
+instead of 503 MB. Both selected the same candidates as at depth 64.
+
+Doubles usually differ within their upper bits, because their ordered encoding
+starts with the sign and the exponent, so a shallower index often selects the
+same candidates. Timestamps use signed integer keys, so their useful depth
+depends on the unit and the range of the data.
 On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
 range 1000 wide, with an index of 100 MB instead of 386 MB built in 0.61 s
-instead of 1.79 s. Integers are different: identifiers or counts far below
-`2^32` share their upper 32 bits, so at `max_level := 32` every row falls into
-the same cell and the index stops pruning. A box on one million BIGINT pairs
-read 1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
+instead of 1.79 s. BIGINT is different: identifiers or counts far below `2^32`
+share their upper 32 bits, so at `max_level := 32` every row falls into the
+same cell and the index stops pruning. A box on one million BIGINT pairs read
+1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
 floating point and time coordinates whose values differ within that many bits,
-or declare `lower` and `upper` so that the leading bits cover the data; keep 64
-for unnormalized integer coordinates, and compare `rows_scanned` on the
-application's own boxes.
+or declare `lower` and `upper` so that the leading bits cover the data; keep
+the default for unnormalized integer coordinates, and compare `rows_scanned` on
+the application's own boxes.
+
+Which levels a query's cells fall on depends on the box size, so the number of
+query terms moves with it: a covering cell just below an indexed level becomes
+up to `2^(dimensions * (level_step - 1))` terms. Across thirteen box sizes from
+±700 to ±85,000 on one million INTEGER pairs, single boxes ran up to 20% faster
+or slower at depth 32 than at depth 64, and all thirteen took 22.9 ms in total
+at either depth.
 
 Building an index buffers up to `segment_memory_max` per build worker (see
 [write memory](maintenance.md#write-memory)), and a curve index writes more

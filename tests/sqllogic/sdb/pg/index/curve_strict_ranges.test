@@ -372,6 +372,54 @@ statement ok
 DROP TABLE curve_strict_metrics;
 
 statement ok
+CREATE TABLE curve_strict_narrow(id INTEGER PRIMARY KEY, x INTEGER, y SMALLINT);
+
+statement ok
+INSERT INTO curve_strict_narrow SELECT i, i % 4, i // 4 FROM range(16) t(i);
+
+statement ok
+CREATE INDEX curve_strict_narrow_idx ON curve_strict_narrow USING inverted(
+ id, (curve(x, y))) INCLUDE (x,y);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_strict_narrow;
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_strict_narrow.json';
+
+query
+SELECT sum(id) AS total FROM curve_strict_narrow_idx
+ WHERE curve(x, y) @@ ts_between(ROW(0,0), ROW(2,2), false, false);
+----
+total
+5
+
+statement ok
+RESET enable_profiling;
+
+query
+SELECT max(CAST(j.atom AS BIGINT)) AS candidates
+FROM read_text('${__TEST_DIR__}/curve_strict_narrow.json') f, json_tree(f.content) j WHERE j.key='rows_scanned';
+----
+candidates
+1
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_strict_narrow_idx WHERE x > 2147483647::BIGINT AND y >= 0) AS above,
+ (SELECT list(id ORDER BY id) FROM curve_strict_narrow_idx WHERE x < 1 AND x > -5000000000::BIGINT AND y < 1) AS below,
+ (SELECT list(id ORDER BY id) FROM curve_strict_narrow_idx WHERE x >= 3 AND x <= 3000000000::BIGINT AND y > 2 AND y < 70000) AS clamped;
+----
+above	below	clamped
+NULL	{0}	{15}
+
+statement ok
+DROP TABLE curve_strict_narrow;
+
+statement ok
 CREATE TABLE curve_strict_lossy(id INTEGER PRIMARY KEY, x BIGINT, d DOUBLE, ip INET, y BIGINT);
 
 statement ok
