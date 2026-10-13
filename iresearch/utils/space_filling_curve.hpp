@@ -455,6 +455,10 @@ inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
     terms.push_back(
       Term(code, options.dimensions, cell.level,
            cell.level == options.max_level ? kLeafTerm : kAncestorTerm));
+    for (uint32_t level = 0; level <= cell.level && level < options.max_level;
+         level += options.level_step) {
+      terms.push_back(Term(code, options.dimensions, level, kLeafTerm));
+    }
   };
   for (const auto& cell : cells) {
     if (IsIndexedLevel(cell.level, options)) {

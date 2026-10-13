@@ -81,6 +81,7 @@ struct FieldRecord {
   irs::ColumnOptions column_options;
   duckdb::idx_t text_dictionary = 0;
   std::optional<irs::curve::Options> curve;
+  bool trim_curve_terms = false;
 };
 
 struct InvertedIndexData {

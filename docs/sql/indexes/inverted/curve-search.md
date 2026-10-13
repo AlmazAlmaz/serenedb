@@ -102,12 +102,11 @@ be finite, while date and timestamp bounds can be infinite.
 On 10,000 points with `x` in `[0, 100)` and `y` in `[0, 10^9)`, a box matching
 220 rows produced 2,003 candidates without normalization and 234 with it. With
 DOUBLE values in `[1000, 1001]` and `max_level := 24`, the same box produced
-3,750 candidates without normalization and 239 with it. Normalization spends
-every level on the declared range, which also writes more distinct terms: on
-one million uniform DOUBLE points in `[0, 1000)` at `max_level := 32`, whose
-leading bits already separate the values, it did not speed up queries and grew
-the index from 100 MB to 167 MB. The bounds are part of the call, so the query
-repeats them.
+3,750 candidates without normalization and 239 with it. On one million uniform
+DOUBLE points in `[0, 1000)` at `max_level := 32`, whose leading bits already
+separate the values, normalization did not speed up queries, and the index took
+31 MB against 30 MB. The bounds are part of the call, so the query repeats
+them.
 
 ## INET coordinates
 
@@ -137,11 +136,23 @@ row. An open side leaves that axis unconstrained, and every cell constrains all
 axes at once, so a box that is open on most axes prunes little.
 
 A point writes a term for each indexed level: every `level_step`-th level and
-`max_level`, `max_level / level_step + 2` terms at most. Most of the levels hold
-no information for real data -- BIGINT columns of small values share their top
-levels in every row, and doubles reach one row per cell long before level 64 --
-so the step is the main control over index size and build time. The query cover
-is computed at full precision; a covering cell between two indexed levels is
+`max_level`, `max_level / level_step + 2` terms at most. When a segment is
+written, a row's terms stop at the first indexed level where the row is alone
+in its cell within that segment, and the term there becomes the row's leaf.
+Doubles, timestamps and integers of a wide range reach one row per cell long
+before their last level, so most rows keep only a few terms; a query cell also
+looks up the leaf terms of its own level and of its indexed ancestors, which
+finds those rows, and merged segments keep the leaves they were written with.
+An index created by a release without this trimming keeps every level until it
+is recreated. On ten million points the index of three DOUBLE coordinates took 386 MB instead
+of 3,949 MB and compacted in 3.6 s instead of 120 s; two INTEGER coordinates and
+a DATE took 312 MB instead of 769 MB, and INET with a TIMESTAMP 471 MB instead
+of 1,557 MB. On fifty million points the DOUBLE index at `max_level := 40` took
+1,883 MB instead of 8,167 MB and compacted in 3 minutes instead of 23. The
+extra leaf lookups cost small boxes 0.1 to 0.4 ms. Every level is still
+buffered before a segment is written, so the step and the depth keep
+controlling build time and build memory. The query cover is computed at full
+precision; a covering cell between two indexed levels is
 replaced by its descendants on the next indexed level that intersect the box, at
 most `2^(dimensions * (level_step - 1))` terms per cell. The candidates are therefore
 never coarser than with `level_step = 1`, only the query carries more terms, and
@@ -177,8 +188,8 @@ bits of its size, up to 64, and a normalized FLOAT or DOUBLE axis 64.
 default names the same call. On one million points of two INTEGER coordinates
 and one DATE, the default depth of 32 built the index in 0.67 s instead of
 1.09 s at depth 64. Normalized to their ranges, the same coordinates took a
-depth of 20 and built in 0.39 s instead of 1.64 s, with an index of 85 MB
-instead of 503 MB. Both selected the same candidates as at depth 64.
+depth of 20 and built in 0.39 s instead of 1.64 s. Both selected the same
+candidates as at depth 64.
 
 Doubles usually differ within their upper bits, because their ordered encoding
 starts with the sign and the exponent, so a shallower index often selects the
@@ -186,15 +197,15 @@ same candidates. Timestamps use signed integer keys, so their useful depth
 depends on the unit and the range of the data.
 On one million uniform DOUBLE points in three dimensions, `max_level := 32`
 selected exactly the same candidates as 64 for boxes from ±0.5 to ±100 of a
-range 1000 wide, with an index of 100 MB instead of 386 MB built in 0.61 s
-instead of 1.79 s. BIGINT is different: identifiers or counts far below `2^32`
+range 1000 wide and built in 0.58 s instead of 1.66 s; both indexes took 30 MB,
+as rows stop at the level where they are alone. BIGINT is different: identifiers or counts far below `2^32`
 share their upper 32 bits, so at `max_level := 32` every row falls into the
 same cell and the index stops pruning. A box on one million BIGINT pairs read
-1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` for
-floating point and time coordinates whose values differ within that many bits,
-or declare `lower` and `upper` so that the leading bits cover the data; keep
-the default for unnormalized integer coordinates, and compare `rows_scanned` on
-the application's own boxes.
+1,000,000 candidates at depth 32 against 127 at 64. Lower `max_level` to build
+faster for floating point and time coordinates whose values differ within that
+many bits, or declare `lower` and `upper` so that the leading bits cover the
+data; keep the default for unnormalized integer coordinates, and compare
+`rows_scanned` on the application's own boxes.
 
 Which levels a query's cells fall on depends on the box size, so the number of
 query terms moves with it: a covering cell just below an indexed level becomes
@@ -208,7 +219,7 @@ Building an index buffers up to `segment_memory_max` per build worker (see
 terms per row than per-column fields. On ten million three-dimensional points
 the default build peaked at about 10.5 GB of RAM; `WITH (segment_memory_max =
 16777216)` kept it below 2 GB at the cost of a longer compaction to one segment,
-640 s instead of 96 s.
+41 s instead of 8 s.
 
 ## Choosing a curve
 

@@ -18,6 +18,8 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include <absl/algorithm/container.h>
+#include <absl/container/flat_hash_map.h>
 #include <gtest/gtest.h>
 
 #include <iresearch/utils/space_filling_curve.hpp>
@@ -146,6 +148,36 @@ std::vector<std::string> IndexedPoint(const Point& point,
     terms.emplace_back(term.begin(), term.end());
   });
   return terms;
+}
+
+std::vector<std::vector<std::string>> TrimmedSegment(
+  std::span<const Point> points, const Options& options) {
+  std::vector<std::vector<std::string>> terms;
+  absl::flat_hash_map<std::string, size_t> docs;
+  for (const auto& point : points) {
+    terms.push_back(IndexedPoint(point, options));
+    for (const auto& term : terms.back()) {
+      ++docs[term];
+    }
+  }
+  for (auto& own : terms) {
+    for (size_t i = 0; i < own.size(); ++i) {
+      if (own[i][0] == kAncestorTerm && docs[own[i]] == 1) {
+        own[i][0] = kLeafTerm;
+        own.resize(i + 1);
+        break;
+      }
+    }
+  }
+  return terms;
+}
+
+size_t CoveringTerms(const std::vector<std::string>& query,
+                     const Options& options) {
+  return absl::c_count_if(query, [&](const std::string& term) {
+    return term[0] == kAncestorTerm ||
+           static_cast<uint8_t>(term[2]) == options.max_level;
+  });
 }
 
 TEST(SpaceFillingCurve, EncodeMatchesBitwiseReference) {
@@ -376,7 +408,8 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
             const auto cover = CoverBox(box, options);
             ASSERT_LE(cover.size(), budget);
             const auto query = PointQueryTerms(cover, box, options);
-            EXPECT_LE(query.size(), budget << (dimensions * (step - 1)));
+            EXPECT_LE(CoveringTerms(query, options),
+                      budget << (dimensions * (step - 1)));
             for (const auto& point : {box.min, box.max, inside}) {
               EXPECT_TRUE(Match(IndexedPoint(point, options), query));
             }
@@ -437,8 +470,67 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
         const Box box{point, point};
         const auto query =
           PointQueryTerms(CoverBox(box, options), box, options);
-        ASSERT_EQ(query.size(), 1);
+        ASSERT_EQ(CoveringTerms(query, options), 1);
+        EXPECT_EQ(query.size(), 1 + (level + step - 1) / step);
         EXPECT_TRUE(Match(IndexedPoint(point, options), query));
+      }
+    }
+  }
+}
+
+TEST(SpaceFillingCurve, TrimmedPointsMatchTheirBoxes) {
+  std::mt19937_64 random{1317};
+  for (uint32_t dimensions : {2, 3, 5}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t step : {uint32_t{1}, DefaultLevelStep(dimensions),
+                            MaxLevelStep(dimensions)}) {
+        const Options options{.dimensions = dimensions,
+                              .max_cells = 16,
+                              .hilbert = hilbert,
+                              .level_step = step};
+        std::vector<Point> points;
+        for (uint32_t i = 0; i < 300; ++i) {
+          Point point;
+          point.fill(0);
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            point[axis] = i % 3 == 0
+                            ? random()
+                            : (uint64_t{1} << 63) + (random() >> (36 + i % 24));
+          }
+          points.push_back(point);
+          if (i % 17 == 0) {
+            points.push_back(point);
+          }
+        }
+        const auto indexed = TrimmedSegment(points, options);
+        size_t trimmed = 0;
+        for (const auto& own : indexed) {
+          trimmed += static_cast<uint8_t>(own.back()[2]) != options.max_level;
+        }
+        EXPECT_GT(trimmed, points.size() / 2);
+        for (uint32_t trial = 0; trial < 48; ++trial) {
+          const auto& center = points[random() % points.size()];
+          const auto span = random() >> (random() % 64);
+          Box box;
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            box.min[axis] = center[axis] > span ? center[axis] - span : 0;
+            box.max[axis] = UINT64_MAX - center[axis] > span
+                              ? center[axis] + span
+                              : UINT64_MAX;
+          }
+          const auto query =
+            PointQueryTerms(CoverBox(box, options), box, options);
+          for (size_t i = 0; i < points.size(); ++i) {
+            bool inside = true;
+            for (uint32_t axis = 0; axis < dimensions; ++axis) {
+              inside &= points[i][axis] >= box.min[axis] &&
+                        points[i][axis] <= box.max[axis];
+            }
+            if (inside) {
+              EXPECT_TRUE(Match(indexed[i], query));
+            }
+          }
+        }
       }
     }
   }

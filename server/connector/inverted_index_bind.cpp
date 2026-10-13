@@ -1172,6 +1172,7 @@ void DeriveKeys(
     if (curve) {
       field.curve = curve->options;
       field.whole_value = true;
+      field.trim_curve_terms = true;
     }
     if (auto& ivf = field.column_options.ann_info) {
       ivf->centroids_id = record.field_id;
