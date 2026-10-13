@@ -65,6 +65,10 @@ inline uint32_t DefaultLevelStep(uint32_t dimensions) noexcept {
   return 1 + 4 / dimensions;
 }
 
+inline uint32_t DefaultMaxCells(uint32_t dimensions) noexcept {
+  return std::min(uint32_t{64}, uint32_t{4} << dimensions);
+}
+
 inline uint32_t MaxLevelStep(uint32_t dimensions) noexcept {
   return 1 + kMaxExpansionBits / dimensions;
 }

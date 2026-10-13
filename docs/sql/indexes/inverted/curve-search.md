@@ -22,7 +22,7 @@ coordinate is NULL. The options are named arguments with constant values:
 | `kind` | `'morton'` | `'morton'` or `'hilbert'`. |
 | `max_level` | the most bits a coordinate needs | 0 through 64 coordinate bits used for cells, see [Choosing a depth](#choosing-a-depth). Smaller values reduce depth and precision. Level 0 is the whole domain. |
 | `level_step` | `1 + 4 / dimensions` | 1 through `1 + 12 / dimensions`. An index writes a point at every `level_step`-th level and at `max_level`. |
-| `max_cells` | `64` | 1 through 4096 covering cells per query of an index on this call. |
+| `max_cells` | `min(64, 4 * 2^dimensions)` | 1 through 4096 covering cells per query of an index on this call, see [Coverings](#coverings). |
 | `lower`, `upper` | NULL | `ROW(...)`s with one value per coordinate that normalize the axes, see [below](#axis-normalization). |
 
 Coordinates can be signed integers through BIGINT, unsigned integers through
@@ -142,9 +142,8 @@ no information for real data -- BIGINT columns of small values share their top
 levels in every row, and doubles reach one row per cell long before level 64 --
 so the step is the main control over index size and build time. The query cover
 is computed at full precision; a covering cell between two indexed levels is
-replaced by its
-descendants on the next indexed level that intersect the box, at most
-`2^(dimensions * (level_step - 1))` terms per cell. The candidates are therefore
+replaced by its descendants on the next indexed level that intersect the box, at
+most `2^(dimensions * (level_step - 1))` terms per cell. The candidates are therefore
 never coarser than with `level_step = 1`, only the query carries more terms, and
 every query term is a term dictionary lookup. The default keeps that expansion
 at no more than 16 terms per cell: 3 for two dimensions, 2 for three and four,
@@ -152,6 +151,17 @@ and 1 from five dimensions up. On one million three-dimensional points a step
 of 2 builds the index in 56 to 59% of the time of a step of 1 with queries at
 most 12% slower, while a step of 3 builds faster still but turns a 64-cell
 cover into up to 1,233 query terms.
+
+Every query term is a dictionary lookup and one more posting list to merge,
+while candidates read from a few long posting lists are cheap to recheck, so a
+smaller cover often wins. The default budget is 16 cells for two dimensions, 32
+for three and 64 from four up, enough for a boundary cell to split on every
+axis at once up to six dimensions. On one million INTEGER pairs, 16 cells
+instead of 64 cut the query terms of thirteen box sizes from 4,642 to 939 and
+their total time by 9 to 11%, with 8% more candidates; on ten million pairs in
+the same range the time fell by 7%. Three and four dimensions ran as fast with
+16, 32 or 64 cells, while six dimensions need 64: with 32, a box of 7 rows read
+607 candidates.
 
 ## Choosing a depth
 
@@ -189,9 +199,9 @@ the application's own boxes.
 Which levels a query's cells fall on depends on the box size, so the number of
 query terms moves with it: a covering cell just below an indexed level becomes
 up to `2^(dimensions * (level_step - 1))` terms. Across thirteen box sizes from
-±700 to ±85,000 on one million INTEGER pairs, single boxes ran up to 20% faster
-or slower at depth 32 than at depth 64, and all thirteen took 22.9 ms in total
-at either depth.
+±700 to ±85,000 on one million INTEGER pairs at `max_cells := 64`, single boxes
+ran up to 20% faster or slower at depth 32 than at depth 64, and all thirteen
+took 22.9 ms in total at either depth.
 
 Building an index buffers up to `segment_memory_max` per build worker (see
 [write memory](maintenance.md#write-memory)), and a curve index writes more
