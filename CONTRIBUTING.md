@@ -252,7 +252,7 @@ SQL examples are backed by sqllogic tests, so an example that stops working fail
 
 ## Storage compatibility
 
-These rules cover everything SereneDB writes: database files and their write-ahead logs, the search-table WAL and search index directories.
+These rules cover everything SereneDB writes: database files and their write-ahead logs, and search index directories.
 
 Files are not reproducible byte for byte, and making them so is not a goal. The same data and statements can write different bytes: hash tables iterate in a different order in every process, and parallel builds, checkpoints, refreshes and merges run in a different order every time. Compatibility is about what a reader gets back, so compatibility tests compare contents, never the bytes of a file.
 
@@ -260,7 +260,7 @@ A file never holds stale memory, though: a compression method writes every byte 
 
 Only two places record a storage version, a `serenedb_vN` value of DuckDB's `StorageVersion`:
 
-- The headers of each database file (`engine_v1/<oid>/data.db`). The file's write-ahead log and the database's search-table WAL follow it.
+- The headers of each database file (`engine_v1/<oid>/data.db`). The file's write-ahead log follows it, including the entries of the database's search tables.
 - `segments_N` of each search index directory. The directory's other files are only reached through it.
 
 SereneDB always writes `SERENEDB_LATEST`, and only into its own databases (`CREATE DATABASE`): an `ATTACH` of a DuckDB database refuses a SereneDB storage version, and nothing attaches a SereneDB database by path. A reader opens the versions from `SERENEDB_VERSION_LOWER` to `SERENEDB_VERSION_UPPER` and refuses the rest: a higher one as written by a newer release, a lower one as older than it reads (`duckdb::StorageVersionError`; the constants are in `third_party/duckdb/src/include/duckdb/storage/storage_info.hpp`).
@@ -309,7 +309,6 @@ engine_v1/
   catalog.wal          the catalog log: the definitions of every database
   <database oid>/      one database
     data.db            its DuckDB file, with data.db.wal beside it
-    search.wal.<tick>  its search-table WAL
     <object oid>/      a search table, or an inverted index on a table or view
 ```
 
@@ -319,11 +318,25 @@ engine_v1/
 
 ### Serialized structs
 
-Blobs stored in catalog entries (tokenizer configs, the inverted index payload), the view-backed index manifest and the segment references of the search-table WAL are written with `irs::utils::WriteTuple` and read with `ReadTuple`. An aggregate is a `BinarySerializer` object whose field ids are the positions of its members, and a member equal to its value in a value-initialized aggregate is not written. A struct boost::pfr cannot reflect (one holding a `std::vector<std::unique_ptr<T>>`) declares `SerdeFields(value)` returning `std::tie` of its members, in declaration order.
+Blobs stored in catalog entries (tokenizer configs, the inverted index payload) and the view-backed index manifest are written with `irs::utils::WriteTuple` and read with `ReadTuple`. An aggregate is a `BinarySerializer` object whose field ids are the positions of its members, and a member equal to its value in a value-initialized aggregate is not written. A struct boost::pfr cannot reflect (one holding a `std::vector<std::unique_ptr<T>>`) declares `SerdeFields(value)` returning `std::tie` of its members, in declaration order.
 
-### Search-table WAL
+### Search tables in the write-ahead log
 
-The WAL of a database's search tables is a series of segments in the database's directory, `search.wal.<first tick>` with the tick as 16 hex digits. Each frame is `[u64 size][u64 checksum][record]`. The record is a `BinarySerializer` object holding `tick` and then its sections and their ops, each with their own field ids. It records no storage version: the WAL belongs to one database and follows that database's file. The frame and the leading `tick` field never change.
+A commit logs each search table it changed into its database's write-ahead log, inside the same commit as the rest of the transaction: `USE_TABLE` with the table's oid, then `TRUNCATE_TABLE` if the transaction emptied the table, then `ADOPT_SEGMENTS` naming the meta files of segments flushed and fsynced before the commit, then the rows still buffered and the removals, in the order they were made. `INSERT_TUPLE` carries buffered rows and, in its `row_start` field (id 16486), the generated key of its first row; `DELETE_TUPLE` carries the generated keys of rows a `DELETE` removed or an `UPDATE` replaced, one entry per batch a statement processed. The segments can go ahead of the removals because a removal only names rows committed before the transaction, and a `TRUNCATE` drops whatever the transaction wrote before it, so nothing precedes `TRUNCATE_TABLE`.
+
+A transaction buffers a table's rows until they reach the database's `checkpoint_threshold`; then they go into the table's exclusive iresearch transaction, whose segments are written when one fills up and when the statement ends, so the commit only fsyncs them and `ADOPT_SEGMENTS` names them. Rows still buffered at commit are logged inline. The entries after `USE_TABLE` are serialized before the commit takes DuckDB's commit lock, straight into one buffer (`WALEntryBuffer`); under the lock the commit only writes `USE_TABLE` and appends that buffer (`WriteAheadLog::WriteEntries`).
+
+Search tables and inverted indexes share one durability model, `search::IndexDurability`:
+
+- Under the commit lock, after the commit's WAL write, a transaction registers its index transactions with their writers and takes their ticks (`TransactionPreCheckpoint`); once the WAL is synced it commits them at the commit's WAL position (`TransactionDurable`). Registration makes a refresh wait for them, so a refresh saves a prefix of the log.
+- Each saved index meta records the highest WAL position it holds, as the checkpoint iteration and the offset. An inverted index's replay skips the entries below that offset when the iteration is still the database's, and replays the whole log otherwise; a search table's replay skips the entries before that position, whichever log holds them.
+- Boot finishes the replays once every database has loaded (`search::RecoverSearchStorages`) and syncs each write-ahead log first, so the end-of-log position a replay saves is never past what the log durably holds.
+- A checkpoint saves every inverted index in two phases: before the new database header is written, as a pending meta tagged with the checkpoint's iteration; after the header, by committing it. A refresh whose meta holds commits made during a running checkpoint saves it the same way, tagged with that checkpoint; the checkpoint commits it at its end, or, for a search table busy at that moment, the table's next refresh does, so a checkpoint never waits for a search table. An index that opens with a pending meta commits it when the database file reached that iteration and discards it otherwise.
+- A checkpoint never saves a search table. It keeps the log it retires as `.wal.retained.<iteration>` while a table has a commit that is not in a meta its directory sync made durable (`IndexDurability::NeededWAL`), and deletes the kept logs below the oldest iteration a table still needs. Kept logs stay contiguous: while there are any, a checkpoint whose log is empty still retires it, and a checkpoint request with nothing to checkpoint only deletes.
+- Boot replays the kept logs oldest first, search-table entries only, before the main log. A main log whose checkpoint wrote the header but did not retire it becomes a kept log when the database has search tables, and a missing main log next to a checkpoint log means the crash came between retiring the one and moving the other over it, so the checkpoint log becomes the main log. Once the tables are refreshed, boot deletes the kept logs they no longer need.
+- A prepared commit's decision stays in the catalog log while a log holding its batch can still be replayed (`StorageManager::GetOldestWALGeneration`).
+
+An autocommit `TRUNCATE` that clears the index holds the database's shared checkpoint lock from before its entry is written until the index is cleared. The clear writes its meta directly instead of through a refresh, and must not meet the pending meta of a refresh that ran during a checkpoint.
 
 ## VSCode Setup
 
