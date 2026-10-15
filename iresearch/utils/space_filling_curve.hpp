@@ -444,6 +444,16 @@ void CodeTerms(std::span<const uint8_t> code, const Options& options,
 }
 
 template<typename Emit>
+void LeafTerm(std::span<const uint8_t> code, const Options& options,
+              Emit&& emit) {
+  std::array<uint8_t, kTermHeader + sizeof(Code)> term;
+  term[1] = static_cast<uint8_t>(options.dimensions);
+  std::memcpy(term.data() + kTermHeader, code.data(), code.size());
+  detail::EmitTerm(term.data(), options.dimensions, options.max_level,
+                   kLeafTerm, emit);
+}
+
+template<typename Emit>
 void PointTerms(const Point& point, const Options& options, Emit&& emit) {
   Code code;
   const auto size = LeafCode(point, options, code.data());

@@ -115,7 +115,8 @@ void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
 class CurveTokenizer final
   : public irs::analysis::TypedTokenizer<CurveTokenizer> {
  public:
-  explicit CurveTokenizer(irs::curve::Options options) : _options{options} {
+  explicit CurveTokenizer(irs::curve::Options options, bool leaf_only = false)
+    : _options{options}, _leaf_only{leaf_only} {
     irs::curve::Validate(options);
   }
 
@@ -138,12 +139,17 @@ class CurveTokenizer final
     const auto emit = [&](std::span<const uint8_t> term) {
       sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
     };
-    irs::curve::CodeTerms(code, _options, emit);
+    if (_leaf_only) {
+      irs::curve::LeafTerm(code, _options, emit);
+    } else {
+      irs::curve::CodeTerms(code, _options, emit);
+    }
     return true;
   }
 
  private:
   irs::curve::Options _options;
+  bool _leaf_only = false;
 };
 
 }  // namespace sdb::connector

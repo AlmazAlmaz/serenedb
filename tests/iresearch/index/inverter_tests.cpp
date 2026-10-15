@@ -1389,16 +1389,20 @@ TEST(InverterEndToEndTest, InsertKeywordAndTokensThroughWriter) {
 
 class CurveFieldOptions final : public IndexFieldOptions {
  public:
-  explicit CurveFieldOptions(field_id curve) noexcept : _curve{curve} {}
+  CurveFieldOptions(field_id curve, const curve::Options& options) noexcept
+    : _curve{curve}, _options{options} {}
 
   ColumnOptions GetColumnOptions(field_id) const final { return {}; }
   field_id GetNormColumnId(field_id) const final {
     return field_limits::invalid();
   }
-  bool TrimsCurveTerms(field_id id) const final { return id == _curve; }
+  const curve::Options* TrimmedCurve(field_id id) const final {
+    return id == _curve ? &_options : nullptr;
+  }
 
  private:
   field_id _curve;
+  curve::Options _options;
 };
 
 irs::containers::FlatHashMap<doc_id_t, absl::btree_set<std::string>> TermsByDoc(
@@ -1421,34 +1425,19 @@ irs::containers::FlatHashMap<doc_id_t, absl::btree_set<std::string>> TermsByDoc(
   return result;
 }
 
-TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
+std::vector<std::string> CurvePointTerms(const curve::Point& point,
+                                         const curve::Options& options) {
+  std::vector<std::string> terms;
+  curve::PointTerms(point, options, [&](std::span<const uint8_t> term) {
+    terms.emplace_back(term.begin(), term.end());
+  });
+  return terms;
+}
+
+void CheckCurveTerms(std::span<const std::vector<std::string>> points,
+                     const curve::Options& options, size_t& trimmed) {
   constexpr field_id kCurve = 1;
   constexpr field_id kPlain = 2;
-  const curve::Options options{
-    .dimensions = 2,
-    .max_level = 32,
-    .level_step = 2,
-  };
-  pcg64 random{1317};
-  std::vector<std::vector<std::string>> points;
-  for (uint32_t i = 0; i < 400; ++i) {
-    if (i % 13 == 1) {
-      points.emplace_back(points.back());
-      continue;
-    }
-    curve::Point point;
-    point.fill(0);
-    for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
-      point[axis] = i % 3 == 0
-                      ? random()
-                      : (uint64_t{1} << 63) + (random() >> (30 + i % 20));
-    }
-    auto& terms = points.emplace_back();
-    curve::PointTerms(point, options, [&](std::span<const uint8_t> term) {
-      terms.emplace_back(term.begin(), term.end());
-    });
-  }
-
   MemoryDirectory dir;
   auto writer =
     IndexWriter::Make(dir, kOmCreate, irs::tests::DefaultWriterOptions());
@@ -1456,16 +1445,18 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
   std::vector<doc_id_t> ids;
   {
     auto trx = writer->GetBatch();
-    trx.SetFieldOptions(std::make_shared<CurveFieldOptions>(kCurve));
+    trx.SetFieldOptions(std::make_shared<CurveFieldOptions>(kCurve, options));
     for (const auto& terms : points) {
       auto doc = trx.Insert();
       const auto d = doc.DocId();
       ids.emplace_back(d);
       for (const auto field : {kCurve, kPlain}) {
+        const auto own =
+          field == kCurve ? std::span{terms}.last(1) : std::span{terms};
         ASSERT_TRUE(
           doc.WithField(field, IndexFeatures::None, [&](FieldInverter& fld) {
             return fld.InvertKeywords([&](auto&& emit) {
-              for (const auto& term : terms) {
+              for (const auto& term : own) {
                 emit(duckdb::string_t{term.data(),
                                       static_cast<uint32_t>(term.size())},
                      d);
@@ -1490,7 +1481,6 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
   }
   const auto curve = TermsByDoc(segment, kCurve);
   const auto plain = TermsByDoc(segment, kPlain);
-  size_t trimmed = 0;
   for (size_t i = 0; i < points.size(); ++i) {
     auto expected = points[i];
     for (size_t level = 0; level < expected.size(); ++level) {
@@ -1509,7 +1499,66 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
     EXPECT_EQ(absl::btree_set<std::string>(points[i].begin(), points[i].end()),
               plain.at(ids[i]));
   }
+}
+
+TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
+  const curve::Options options{
+    .dimensions = 2,
+    .max_level = 32,
+    .level_step = 2,
+  };
+  pcg64 random{1317};
+  std::vector<std::vector<std::string>> points;
+  for (uint32_t i = 0; i < 400; ++i) {
+    if (i % 13 == 1) {
+      points.push_back(points.back());
+      continue;
+    }
+    curve::Point point;
+    point.fill(0);
+    for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
+      point[axis] = i % 3 == 0
+                      ? random()
+                      : (uint64_t{1} << 63) + (random() >> (30 + i % 20));
+    }
+    points.push_back(CurvePointTerms(point, options));
+  }
+  size_t trimmed = 0;
+  CheckCurveTerms(points, options, trimmed);
   EXPECT_GT(trimmed, points.size() / 4);
+}
+
+TEST(InverterEndToEndTest, CurveTermsOfSmallSegments) {
+  curve::Point a;
+  a.fill(0);
+  a[0] = uint64_t{1} << 63;
+  a[1] = 12345;
+  a[2] = UINT64_MAX;
+  auto b = a;
+  b[1] += 1;
+  auto c = a;
+  c[0] = 7;
+  for (const auto& options :
+       {curve::Options{.dimensions = 2, .max_level = 32, .level_step = 2},
+        curve::Options{.dimensions = 3, .level_step = 2},
+        curve::Options{.dimensions = 3, .max_level = 7, .level_step = 3},
+        curve::Options{.dimensions = 2, .max_level = 0}}) {
+    SCOPED_TRACE(options.max_level);
+    const auto ta = CurvePointTerms(a, options);
+    const auto tb = CurvePointTerms(b, options);
+    const auto tc = CurvePointTerms(c, options);
+    for (const auto& points :
+         std::vector<std::vector<std::vector<std::string>>>{{ta},
+                                                            {ta, ta},
+                                                            {ta, tb},
+                                                            {ta, tb, tc},
+                                                            {ta, ta, tc},
+                                                            {tc, ta, tb, ta}}) {
+      SCOPED_TRACE(points.size());
+      size_t trimmed = 0;
+      CheckCurveTerms(points, options, trimmed);
+    }
+  }
 }
 
 TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
@@ -1550,7 +1599,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
     std::vector<doc_id_t> ids;
     {
       auto trx = writer->GetBatch();
-      trx.SetFieldOptions(std::make_shared<CurveFieldOptions>(kCurve));
+      trx.SetFieldOptions(std::make_shared<CurveFieldOptions>(kCurve, options));
       for (const auto& own : terms) {
         auto doc = trx.Insert();
         const auto d = doc.DocId();
@@ -1558,7 +1607,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
         ASSERT_TRUE(
           doc.WithField(kCurve, IndexFeatures::None, [&](FieldInverter& fld) {
             return fld.InvertKeywords([&](auto&& emit) {
-              for (const auto& term : own) {
+              for (const auto& term : std::span{own}.last(1)) {
                 emit(duckdb::string_t{term.data(),
                                       static_cast<uint32_t>(term.size())},
                      d);
