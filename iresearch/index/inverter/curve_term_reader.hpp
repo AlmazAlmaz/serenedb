@@ -21,11 +21,19 @@
 #pragma once
 
 #include "iresearch/index/inverter/columnar_readers.hpp"
+#include "iresearch/utils/space_filling_curve.hpp"
 
 namespace irs {
 
 class CurveTermIterator final : public TermOnlyIterator {
  public:
+  struct Generated {
+    uint32_t term;
+    uint32_t size;
+    uint32_t docs;
+    uint32_t count;
+  };
+
   struct Entry {
     uint32_t rank;
     uint32_t renamed;
@@ -33,11 +41,14 @@ class CurveTermIterator final : public TermOnlyIterator {
 
   static constexpr uint32_t kOriginal = std::numeric_limits<uint32_t>::max();
 
-  void Reset(const ScatteredField& scattered, std::span<const Entry> order,
-             const byte_type* renamed) noexcept {
+  void Reset(const ScatteredField& scattered,
+             std::span<const Generated> generated, std::span<const Entry> order,
+             const byte_type* bytes, const doc_id_t* docs) noexcept {
     _scattered = &scattered;
+    _generated = generated;
     _order = order;
-    _renamed = renamed;
+    _bytes = bytes;
+    _docs = docs;
     _next = 0;
   }
 
@@ -62,7 +73,18 @@ class CurveTermIterator final : public TermOnlyIterator {
                                std::span<PostingRows> postings,
                                IndexFeatures) final;
 
+  bytes_view Term(const Generated& term) const noexcept {
+    return {_bytes + term.term, term.size};
+  }
+
   bytes_view Term(const Entry& entry) const noexcept;
+
+  size_t Size() const noexcept { return _generated.size() + _order.size(); }
+
+  bytes_view TermAt(size_t i) const noexcept {
+    return i < _generated.size() ? Term(_generated[i])
+                                 : Term(_order[i - _generated.size()]);
+  }
 
   const FieldMeta& Meta() const noexcept { return _scattered->Field().Meta(); }
 
@@ -70,8 +92,10 @@ class CurveTermIterator final : public TermOnlyIterator {
   PostingRows Postings(uint32_t rank) const noexcept;
 
   const ScatteredField* _scattered = nullptr;
+  std::span<const Generated> _generated;
   std::span<const Entry> _order;
-  const byte_type* _renamed = nullptr;
+  const byte_type* _bytes = nullptr;
+  const doc_id_t* _docs = nullptr;
   size_t _next = 0;
 };
 
@@ -79,13 +103,19 @@ class CurveTermReader final : public BasicTermReader,
                               private util::Noncopyable {
  public:
   explicit CurveTermReader(IResourceManager& rm)
-    : _lone{ManagedTypedAllocator<uint8_t>{rm}},
-      _kept{ManagedTypedAllocator<CurveTermIterator::Entry>{rm}},
-      _moved{ManagedTypedAllocator<CurveTermIterator::Entry>{rm}},
+    : _shared{ManagedTypedAllocator<uint16_t>{rm}},
+      _before{ManagedTypedAllocator<uint32_t>{rm}},
+      _rank_of{ManagedTypedAllocator<uint32_t>{rm}},
+      _groups{ManagedTypedAllocator<Group>{rm}},
+      _next_groups{ManagedTypedAllocator<Group>{rm}},
+      _fill{ManagedTypedAllocator<uint32_t>{rm}},
+      _generated{ManagedTypedAllocator<CurveTermIterator::Generated>{rm}},
       _order{ManagedTypedAllocator<CurveTermIterator::Entry>{rm}},
-      _renamed{ManagedTypedAllocator<byte_type>{rm}} {}
+      _moved{ManagedTypedAllocator<CurveTermIterator::Entry>{rm}},
+      _bytes{ManagedTypedAllocator<byte_type>{rm}},
+      _docs{ManagedTypedAllocator<doc_id_t>{rm}} {}
 
-  void Reset(const ScatteredField& scattered);
+  void Reset(const ScatteredField& scattered, const curve::Options& options);
 
   bytes_view(min)() const noexcept final { return _min; }
   bytes_view(max)() const noexcept final { return _max; }
@@ -98,11 +128,26 @@ class CurveTermReader final : public BasicTermReader,
   }
 
  private:
-  ManagedVector<uint8_t> _lone;
-  ManagedVector<CurveTermIterator::Entry> _kept;
-  ManagedVector<CurveTermIterator::Entry> _moved;
+  struct Group {
+    uint32_t begin;
+    uint32_t end;
+    uint32_t docs;
+    uint32_t count;
+  };
+
+  void Split(const Group& group, uint32_t bits);
+
+  ManagedVector<uint16_t> _shared;
+  ManagedVector<uint32_t> _before;
+  ManagedVector<uint32_t> _rank_of;
+  ManagedVector<Group> _groups;
+  ManagedVector<Group> _next_groups;
+  ManagedVector<uint32_t> _fill;
+  ManagedVector<CurveTermIterator::Generated> _generated;
   ManagedVector<CurveTermIterator::Entry> _order;
-  ManagedVector<byte_type> _renamed;
+  ManagedVector<CurveTermIterator::Entry> _moved;
+  ManagedVector<byte_type> _bytes;
+  ManagedVector<doc_id_t> _docs;
   mutable CurveTermIterator _it;
   bytes_view _min;
   bytes_view _max;

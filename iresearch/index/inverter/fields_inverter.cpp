@@ -78,8 +78,8 @@ void FieldsInverter::Flush(burst_trie::FieldWriter& fw, FlushState& state,
       scattered.Reset(field);
       ++fi;
       SDB_ASSERT(scattered.TermCount() != 0);
-      if (field.TrimsCurveTerms()) {
-        curve_terms.Reset(scattered);
+      if (const auto* curve = field.TrimmedCurve()) {
+        curve_terms.Reset(scattered, *curve);
         fw.write(curve_terms);
       } else {
         terms.Reset(scattered);

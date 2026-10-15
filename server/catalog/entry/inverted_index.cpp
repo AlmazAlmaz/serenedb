@@ -278,9 +278,11 @@ irs::ColumnOptions InvertedIndexConfig::GetColumnOptions(
   return {.skip_validity = true};
 }
 
-bool InvertedIndexConfig::TrimsCurveTerms(irs::field_id id) const {
+const irs::curve::Options* InvertedIndexConfig::TrimmedCurve(
+  irs::field_id id) const {
   const auto* entry = FindEntry(id);
-  return entry && entry->trim_curve_terms;
+  return entry && entry->trim_curve_terms && entry->curve ? &*entry->curve
+                                                          : nullptr;
 }
 
 irs::field_id InvertedIndexConfig::GetNormColumnId(irs::field_id id) const {
@@ -302,6 +304,7 @@ IndexTokenizers::IndexTokenizers(duckdb::ClientContext& context,
   for (const auto& [field_id, field] : config.fields) {
     Field resolved;
     resolved.curve = field.curve;
+    resolved.trim_curve_terms = field.trim_curve_terms;
     if (field.HasTextDictionary()) {
       const auto dict =
         serene.FindIn<TokenizerCatalogEntry>(&context, field.text_dictionary);
@@ -337,9 +340,10 @@ ColumnTokenizer IndexTokenizers::Acquire(irs::field_id field_id,
   if (field.curve) {
     return {
       .analyzer =
-        Tokenizer::TokenizerWrapper{
-          std::make_unique<connector::CurveTokenizer>(*field.curve).release(),
-          Tokenizer::Deleter{}},
+        Tokenizer::TokenizerWrapper{std::make_unique<connector::CurveTokenizer>(
+                                      *field.curve, field.trim_curve_terms)
+                                      .release(),
+                                    Tokenizer::Deleter{}},
     };
   }
   if (!field.tokenizer) {

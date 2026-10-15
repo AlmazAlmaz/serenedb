@@ -69,7 +69,7 @@ class FieldInverter : util::Noncopyable {
       _inline_docs{ManagedTypedAllocator<doc_id_t>{rm}},
       _log{MakePostingLog(arena, rm, LayoutFromFeatures(index_features))},
       _meta{id, index_features},
-      _trims_curve_terms{field_options && field_options->TrimsCurveTerms(id)} {
+      _curve{field_options ? field_options->TrimmedCurve(id) : nullptr} {
     if (!col_writer || !IsSubsetOf(IndexFeatures::Norm, index_features)) {
       return;
     }
@@ -84,7 +84,7 @@ class FieldInverter : util::Noncopyable {
   }
 
   const auto& Meta() const noexcept { return _meta; }
-  bool TrimsCurveTerms() const noexcept { return _trims_curve_terms; }
+  const curve::Options* TrimmedCurve() const noexcept { return _curve; }
   std::string_view Error() const noexcept { return _error; }
   doc_id_t LastDoc() const noexcept { return _state.last_doc; }
   const TermDictionary& Dictionary() const noexcept { return _dict; }
@@ -823,7 +823,7 @@ class FieldInverter : util::Noncopyable {
   NormColumnWriter* _norm_writer = nullptr;
   uint32_t _norm_row_group_size = 0;
   FieldMeta _meta;
-  bool _trims_curve_terms = false;
+  const curve::Options* _curve = nullptr;
   mutable std::string _error;
   std::string _dict_id;
   uint32_t _dict_base = 0;
