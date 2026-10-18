@@ -18,9 +18,12 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
-#include <dirent.h>
 #include <gtest/gtest.h>
+
+#ifdef __linux__
+#include <dirent.h>
 #include <sched.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -144,6 +147,7 @@ class FunctionTask final : public duckdb::Task {
   std::function<void()> _fn;
 };
 
+#ifdef __linux__
 struct ThreadInfo {
   std::string name;
   std::string cpus;
@@ -177,8 +181,10 @@ std::map<std::string, ThreadInfo> Threads() {
   closedir(dir);
   return threads;
 }
+#endif
 
 TEST(DuckDBThreads, RelaunchFromPinnedWorkerKeepsWorkersApart) {
+#ifdef __linux__
   cpu_set_t mask;
   if (sched_getaffinity(0, sizeof(mask), &mask) != 0 || CPU_COUNT(&mask) < 4) {
     GTEST_SKIP();
@@ -217,6 +223,9 @@ TEST(DuckDBThreads, RelaunchFromPinnedWorkerKeepsWorkersApart) {
   for (const auto& [cpu, count] : per_cpu) {
     EXPECT_EQ(count, 1U) << "cpu " << cpu;
   }
+#else
+  GTEST_SKIP() << "Requires Linux CPU affinity and /proc";
+#endif
 }
 
 TEST(DuckDBThreads, RelaunchWhileAnotherWorkerRelaunchesDoesNotDeadlock) {
