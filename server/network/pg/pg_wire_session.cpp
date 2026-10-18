@@ -2744,10 +2744,8 @@ yaclib::Task<bool> PgWireSession<Kind>::Negotiate() {
       co_return false;
     }
     // PostgreSQL uses the user name as the database when none is given.
-    if (const auto [it, inserted] =
-          _params.try_emplace("database", user->second);
-        !inserted && it->second.empty()) {
-      it->second = user->second;
+    if (auto& database = _params["database"]; database.empty()) {
+      database = UserName();
     }
 
     if (_max_conn != 0 && _active &&
