@@ -52,6 +52,7 @@
 #include "query/config.h"
 #include "search/inverted_index_storage.h"
 #include "search/search_table.h"
+#include "storage_engine/search_engine.h"
 
 namespace sdb::connector {
 namespace {
@@ -256,14 +257,8 @@ void CompactInvertedStorage(search::InvertedIndexStorage& inverted,
     }
     return !context.IsInterrupted();
   };
-  auto& engine = search::GetSearchEngine();
-  const bool slot = engine.TryAcquireCompaction();
-  absl::Cleanup release_slot = [&engine, slot] {
-    if (slot) {
-      engine.ReleaseCompaction();
-    }
-  };
-  const irs::AnnBuildEnv* env_ptr = slot ? &search::AnnBuildEnv() : nullptr;
+  const search::ManualCompactionSlot slot;
+  const irs::AnnBuildEnv* env_ptr = slot.AnnEnv();
 
   search::ThrowIfRefreshFailed(inverted.Refresh(), index_name);
   for (size_t pass = 0; pass < 8; ++pass) {
