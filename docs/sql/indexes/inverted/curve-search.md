@@ -91,7 +91,8 @@ range of the data, per coordinate:
 
 Integers, dates, timestamps and IPv4 addresses are shifted so that the declared
 range starts at zero and fills the leading bits, which keeps distinct integers,
-dates and timestamps inside the range distinct; INET positions ignore masks.
+dates and timestamps inside the range distinct; an INET value takes the
+position of its network.
 FLOAT and DOUBLE values are mapped linearly onto the 64-bit range. IPv6 ranges
 are described [below](#inet-coordinates). Values outside the range take the
 position of the nearest end and are still found, since the exact check compares
@@ -111,18 +112,20 @@ repeats them.
 
 ## INET coordinates
 
-INET values order by family, then address, then mask. The curve places IPv4
-addresses in the lower half of the axis and IPv6 addresses in the upper half,
-by their leading 63 bits. Masks and the lowest IPv6 bits do not change the
-position; the exact check still compares them. Normalization bounds must have
-increasing positions, so bounds that differ only in their mask cannot define a
-range.
+INET values order as in PostgreSQL: by family, then network, then mask, then
+address, where the network is the address with the bits past the mask cleared.
+The curve places a value at its network: IPv4 networks in the lower half of the
+axis and IPv6 networks in the upper half, by their leading 63 bits. The mask,
+the host bits and the lowest IPv6 bits do not change the position; the exact
+check still compares them. Normalization bounds must have increasing positions,
+so bounds in one network, such as `10.0.0.0/24` and `10.0.0.255/24`, cannot
+define a range.
 
 When `lower` and `upper` of an INET coordinate are both IPv6 addresses, the axis
-measures the full 128-bit distance from `lower`. A range of up to 2^64
-addresses, such as one /64 subnet, keeps every address distinct; a wider range
-keeps the leading 64 bits of the distance. Addresses outside the range, IPv4
-addresses included, take the position of the nearest end. On 20,000 hosts of
+measures the full 128-bit distance of a network from `lower`. A range of up to
+2^64 addresses, such as one /64 subnet, keeps every host distinct; a wider range
+keeps the leading 64 bits of the distance. Networks outside the range, IPv4
+networks included, take the position of the nearest end. On 20,000 hosts of
 one /64 subnet, a box matching 239 rows produced 4,016 candidates without the
 range and 1,251 with `lower := ROW('2001:db8:1::'::INET, NULL)` and
 `upper := ROW('2001:db8:1::ffff:ffff:ffff:ffff'::INET, NULL)`.

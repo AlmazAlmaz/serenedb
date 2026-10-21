@@ -28,6 +28,7 @@
 #include <duckdb/planner/expression/bound_constant_expression.hpp>
 #include <duckdb/planner/expression/bound_function_expression.hpp>
 #include <duckdb/planner/expression/bound_operator_expression.hpp>
+#include <duckdb/planner/expression_binder.hpp>
 #include <iresearch/utils/down_cast.hpp>
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
@@ -40,6 +41,8 @@
 namespace sdb::connector {
 namespace {
 
+constexpr std::string_view kInetSortKey = "inet_sort_key";
+
 const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
   if (duckdb::BoundCastExpression::IsCast(expr)) {
     const auto& child = duckdb::BoundCastExpression::Child(
@@ -49,6 +52,18 @@ const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
     }
   }
   return expr;
+}
+
+const duckdb::Expression& PeelSortKey(const duckdb::Expression& expr) {
+  if (expr.GetExpressionClass() != duckdb::ExpressionClass::BOUND_FUNCTION) {
+    return expr;
+  }
+  const auto& function = expr.Cast<duckdb::BoundFunctionExpression>();
+  if (function.Function().GetName().GetIdentifierName() != kInetSortKey ||
+      function.GetChildren().size() != 1) {
+    return expr;
+  }
+  return *function.GetChildren()[0];
 }
 
 const duckdb::Expression& PeelCasts(const duckdb::Expression& expr) {
@@ -204,25 +219,18 @@ CurveKey QueryKey(duckdb::ClientContext& context, const CurveAxis& axis,
 duckdb::unique_ptr<duckdb::Expression> Compare(
   duckdb::ClientContext& context, duckdb::ExpressionType type,
   const duckdb::Expression& coordinate, const duckdb::Value& bound) {
-  const bool inet = pg::IsInet(coordinate.GetReturnType());
-  const auto comparison =
-    inet ? duckdb::NegateComparisonExpression(type) : type;
   const auto common = duckdb::BoundComparisonExpression::BindComparison(
-    context, coordinate.GetReturnType(), bound.type(), comparison);
-  auto result = duckdb::BoundComparisonExpression::Create(
-    comparison,
-    duckdb::BoundCastExpression::AddCastToType(context, coordinate.Copy(),
-                                               common),
-    duckdb::BoundCastExpression::AddCastToType(
-      context, duckdb::make_uniq<duckdb::BoundConstantExpression>(bound),
-      common));
-  if (!inet) {
-    return result;
-  }
-  auto negation = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
-    duckdb::ExpressionType::OPERATOR_NOT, duckdb::LogicalType::BOOLEAN);
-  negation->GetChildrenMutable().push_back(std::move(result));
-  return negation;
+    context, coordinate.GetReturnType(), bound.type(), type);
+  auto left = duckdb::BoundCastExpression::AddCastToType(
+    context, coordinate.Copy(), common);
+  auto right = duckdb::BoundCastExpression::AddCastToType(
+    context, duckdb::make_uniq<duckdb::BoundConstantExpression>(bound), common);
+  const auto collation =
+    duckdb::ExpressionBinder::ComparisonCollationType(type);
+  duckdb::ExpressionBinder::PushCollation(context, left, common, collation);
+  duckdb::ExpressionBinder::PushCollation(context, right, common, collation);
+  return duckdb::BoundComparisonExpression::Create(type, std::move(left),
+                                                   std::move(right));
 }
 
 duckdb::unique_ptr<duckdb::Expression> IsNotNull(
@@ -255,7 +263,7 @@ void CollectRanges(const duckdb::Expression& expression,
     [&](const duckdb::Expression& component, const duckdb::Expression* lower,
         const duckdb::Expression* upper, bool lower_inclusive = true,
         bool upper_inclusive = true) {
-      if (auto normalized = normalize(PeelCast(component))) {
+      if (auto normalized = normalize(PeelCast(PeelSortKey(component)))) {
         ranges.push_back({std::move(normalized), lower, upper, lower_inclusive,
                           upper_inclusive});
       }
