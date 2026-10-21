@@ -175,8 +175,140 @@ t
 statement error
 SELECT curve('::1'::INET, 2, lower := ROW('2001:db8:1::'::INET, NULL), upper := ROW('2001:db8::'::INET, NULL));
 ----
-db error: ERROR: curve(): coordinate 1 needs INET bounds with lower < upper on the curve; masks do not change the position, got 2001:db8:1:: and 2001:db8::
+db error: ERROR: curve(): coordinate 1 needs INET bounds with lower < upper on the curve, which places a value at its network, got 2001:db8:1::/128 and 2001:db8::/128
 
 
 statement ok
 DROP TABLE curve_subnet;
+
+statement ok
+CREATE TABLE curve_masked(id INTEGER PRIMARY KEY, ip INET, t BIGINT);
+
+statement ok
+INSERT INTO curve_masked VALUES
+ (1, '10.100.5.5/14', 0), (2, '10.100.5.5', 0), (3, '10.63.255.255', 0), (4, '10.70.1.1/8', 0),
+ (5, '2001:db8:ffff::1/32', 0), (6, '2001:db9::1', 0);
+
+statement ok
+CREATE INDEX curve_masked_idx ON curve_masked USING inverted(id, (curve(ip, t))) INCLUDE (ip, t);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_masked;
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_masked WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET) AS ipv4,
+ (SELECT list(id ORDER BY id) FROM curve_masked WHERE ip BETWEEN '2001:db8::/32'::INET AND '2001:db8::1'::INET) AS ipv6;
+----
+ipv4	ipv6
+{1}	{5}
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_masked_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('10.64.0.0'::INET, NULL), ROW('10.100.0.0'::INET, NULL), true, true)) AS ipv4,
+ (SELECT list(id ORDER BY id) FROM curve_masked_idx WHERE curve(ip, t) @@ ts_between(
+   ROW('2001:db8::/32'::INET, NULL), ROW('2001:db8::1'::INET, NULL), true, true)) AS ipv6,
+ (SELECT list(id ORDER BY id) FROM curve_masked_idx
+   WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET AND t BETWEEN 0 AND 0) AS ipv4_range,
+ (SELECT list(id ORDER BY id) FROM curve_masked_idx
+   WHERE ip >= '2001:db8::/32'::INET AND ip <= '2001:db8::1'::INET AND t = 0) AS ipv6_range;
+----
+ipv4	ipv6	ipv4_range	ipv6_range
+{1}	{5}	{1}	{5}
+
+statement ok
+DROP TABLE curve_masked;
+
+statement ok
+CREATE TABLE curve_networks(id INTEGER PRIMARY KEY, ip INET, t BIGINT);
+
+statement ok
+INSERT INTO curve_networks SELECT i,
+ CASE WHEN i % 2 = 0
+      THEN ('10.' || (i * 37 % 256) || '.' || (i * 91 % 256) || '.' || (i % 256) || '/' || (i * 7 % 33))::INET
+      ELSE ('2001:db8:' || lower(printf('%x', i * 7919 % 65536)) || '::' || lower(printf('%x', i)) || '/' || (i * 13 % 129))::INET END,
+ i % 100
+FROM range(4000) r(i);
+
+statement ok
+CREATE INDEX curve_networks_m ON curve_networks USING inverted(id, (curve(ip, t))) INCLUDE (ip, t);
+
+statement ok
+CREATE INDEX curve_networks_h ON curve_networks USING inverted(id, (curve(ip, t, kind := 'hilbert', max_cells := 64))) INCLUDE (ip, t);
+
+statement ok
+CREATE INDEX curve_networks_v4 ON curve_networks USING inverted(id, (curve(ip, t,
+ lower := ROW('10.0.0.0'::INET, 0), upper := ROW('10.255.255.255'::INET, 100)))) INCLUDE (ip, t);
+
+statement ok
+CREATE INDEX curve_networks_v6 ON curve_networks USING inverted(id, (curve(ip, t,
+ lower := ROW('2001:db8::'::INET, NULL), upper := ROW('2001:db8:ffff:ffff:ffff:ffff:ffff:ffff'::INET, NULL)))) INCLUDE (ip, t);
+
+statement ok
+VACUUM (REFRESH_TABLE) curve_networks;
+
+query
+SELECT
+ (SELECT list(id ORDER BY id) FROM curve_networks_m WHERE curve(ip, t) @@ ts_between(
+   ROW('10.64.0.0'::INET, 10), ROW('10.100.0.0'::INET, 60), true, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_networks
+   WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET AND t BETWEEN 10 AND 60) AS morton,
+ (SELECT list(id ORDER BY id) FROM curve_networks_h WHERE curve(ip, t, kind := 'hilbert', max_cells := 64) @@ ts_between(
+   ROW('10.64.0.0/10'::INET, 10), ROW('10.100.0.0/16'::INET, 60), false, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_networks
+   WHERE ip > '10.64.0.0/10'::INET AND ip <= '10.100.0.0/16'::INET AND t > 10 AND t <= 60) AS hilbert,
+ (SELECT list(id ORDER BY id) FROM curve_networks_v4 WHERE curve(ip, t,
+   lower := ROW('10.0.0.0'::INET, 0), upper := ROW('10.255.255.255'::INET, 100)) @@ ts_between(
+   ROW('10.64.0.0'::INET, 10), ROW('10.100.0.0'::INET, 60), true, false))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_networks
+   WHERE ip >= '10.64.0.0'::INET AND ip < '10.100.0.0'::INET AND t >= 10 AND t < 60) AS ipv4_range,
+ (SELECT list(id ORDER BY id) FROM curve_networks_v6 WHERE curve(ip, t,
+   lower := ROW('2001:db8::'::INET, NULL), upper := ROW('2001:db8:ffff:ffff:ffff:ffff:ffff:ffff'::INET, NULL)) @@ ts_between(
+   ROW('2001:db8:4000::/20'::INET, NULL), ROW('2001:db8:9000::'::INET, NULL), true, true))
+ IS NOT DISTINCT FROM
+ (SELECT list(id ORDER BY id) FROM curve_networks
+   WHERE ip BETWEEN '2001:db8:4000::/20'::INET AND '2001:db8:9000::'::INET AND t IS NOT NULL) AS ipv6_range,
+ (SELECT count(*) FROM curve_networks
+   WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET AND t BETWEEN 10 AND 60
+   AND host(ip)::INET > '10.100.0.0'::INET) > 0 AS hosts_past_upper;
+----
+morton	hilbert	ipv4_range	ipv6_range	hosts_past_upper
+t	t	t	t	t
+
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '${__TEST_DIR__}/curve_networks_range.json';
+
+query
+SELECT count(id) AS n, sum(id) AS total FROM curve_networks_m
+WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET AND t BETWEEN 10 AND 60;
+----
+n	total
+99	186978
+
+statement ok
+RESET enable_profiling;
+
+query
+SELECT count(id) AS n, sum(id) AS total FROM curve_networks
+WHERE ip BETWEEN '10.64.0.0'::INET AND '10.100.0.0'::INET AND t BETWEEN 10 AND 60;
+----
+n	total
+99	186978
+
+query
+SELECT max(CAST(j.atom AS BIGINT)) < 1000 AS pruned
+FROM read_text('${__TEST_DIR__}/curve_networks_range.json') f, json_tree(f.content) j
+WHERE j.key = 'rows_scanned';
+----
+pruned
+t
+
+statement ok
+DROP TABLE curve_networks;

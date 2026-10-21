@@ -127,9 +127,9 @@ db error: ERROR: curve(): coordinate 1 needs bounds with a finite difference, go
 
 
 statement error
-SELECT curve('10.0.0.1/24'::INET, 0, lower := ROW('10.0.0.1/24'::INET, NULL), upper := ROW('10.0.0.1/32'::INET, NULL));
+SELECT curve('10.0.0.1/24'::INET, 0, lower := ROW('10.0.0.0/24'::INET, NULL), upper := ROW('10.0.0.255/24'::INET, NULL));
 ----
-db error: ERROR: curve(): coordinate 1 needs INET bounds with lower < upper on the curve; masks do not change the position, got 10.0.0.1/24 and 10.0.0.1
+db error: ERROR: curve(): coordinate 1 needs INET bounds with lower < upper on the curve, which places a value at its network, got 10.0.0.0/24 and 10.0.0.255/24
 
 
 statement ok

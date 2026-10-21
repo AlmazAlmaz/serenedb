@@ -20,6 +20,7 @@
 
 #include "connector/curve_index.h"
 
+#include <absl/base/internal/endian.h>
 #include <absl/strings/ascii.h>
 
 #include <duckdb/common/vector/constant_vector.hpp>
@@ -33,6 +34,7 @@
 #include <iresearch/utils/pg/errcodes.hpp>
 #include <iresearch/utils/pg/sql_exception_macro.hpp>
 
+#include "connector/inet_terms.h"
 #include "connector/pg_logical_types.h"
 
 namespace sdb::connector {
@@ -153,37 +155,64 @@ uint32_t AxisBits(const CurveAxis& axis) noexcept {
   return std::bit_width(axis.key_hi - axis.key_lo) - KeyShift(axis);
 }
 
-uint64_t InetKey(uint8_t ip_type, duckdb::hugeint_t address) noexcept {
-  if (ip_type == kInetV6) {
-    return irs::curve::kSignBit |
-           ((static_cast<uint64_t>(address.upper) ^ irs::curve::kSignBit) >> 1);
+struct InetValue {
+  uint8_t ip_type = 0;
+  absl::uint128 network;
+};
+
+InetValue InetNetwork(uint8_t ip_type, absl::uint128 address,
+                      uint16_t mask) noexcept {
+  const uint32_t bits = ip_type == kInetV6 ? 128 : 32;
+  if (mask >= bits) {
+    return {.ip_type = ip_type, .network = address};
   }
-  if (ip_type == kInetV4) {
-    return address.lower << 31;
+  const auto host = absl::Uint128Max() >> (128 - bits + mask);
+  return {.ip_type = ip_type, .network = address & ~host};
+}
+
+InetValue StoredInet(uint8_t ip_type, duckdb::hugeint_t address,
+                     uint16_t mask) noexcept {
+  if (ip_type == kInetV6) {
+    return InetNetwork(ip_type,
+                       absl::MakeUint128(static_cast<uint64_t>(address.upper) ^
+                                           pg::kInetV6SortBit,
+                                         address.lower),
+                       mask);
+  }
+  return InetNetwork(ip_type, address.lower, mask);
+}
+
+uint64_t InetKey(const InetValue& value) noexcept {
+  if (value.ip_type == kInetV6) {
+    return irs::curve::kSignBit | (absl::Uint128High64(value.network) >> 1);
+  }
+  if (value.ip_type == kInetV4) {
+    return absl::Uint128Low64(value.network) << 31;
   }
   return 0;
 }
 
-struct InetValue {
-  uint8_t ip_type = 0;
-  duckdb::hugeint_t address;
-};
+std::optional<InetValue> DecodeInet(const duckdb::Value& value) {
+  const auto inet = inet_terms::FromValue(value);
+  if (!inet) {
+    return std::nullopt;
+  }
+  const auto* address = inet->address.data();
+  if (inet->family == inet_terms::Family::V6) {
+    return InetNetwork(
+      kInetV6,
+      absl::MakeUint128(absl::big_endian::Load64(address),
+                        absl::big_endian::Load64(address + sizeof(uint64_t))),
+      inet->mask);
+  }
+  return InetNetwork(kInetV4, absl::big_endian::Load32(address), inet->mask);
+}
 
 std::optional<InetValue> ToInet(const duckdb::Value& bound) {
   if (!pg::IsInet(bound.type())) {
     return std::nullopt;
   }
-  const auto& parts = duckdb::StructValue::GetChildren(bound);
-  if (parts[0].IsNull() || parts[1].IsNull()) {
-    return std::nullopt;
-  }
-  return InetValue{.ip_type = parts[0].GetValue<uint8_t>(),
-                   .address = parts[1].GetValue<duckdb::hugeint_t>()};
-}
-
-absl::uint128 Ipv6Address(duckdb::hugeint_t address) noexcept {
-  return absl::MakeUint128(
-    static_cast<uint64_t>(address.upper) ^ irs::curve::kSignBit, address.lower);
+  return DecodeInet(bound);
 }
 
 uint64_t Ipv6RangeKey(const CurveAxis& axis, InetValue value) noexcept {
@@ -191,8 +220,7 @@ uint64_t Ipv6RangeKey(const CurveAxis& axis, InetValue value) noexcept {
     return 0;
   }
   const auto offset =
-    std::clamp(Ipv6Address(value.address), axis.ipv6_lo, axis.ipv6_hi) -
-    axis.ipv6_lo;
+    std::clamp(value.network, axis.ipv6_lo, axis.ipv6_hi) - axis.ipv6_lo;
   const auto span = axis.ipv6_hi - axis.ipv6_lo;
   const auto high = absl::Uint128High64(span);
   if (high == 0) {
@@ -311,7 +339,7 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
       if (!inet) {
         return std::nullopt;
       }
-      return RawBound{.key = InetKey(inet->ip_type, inet->address)};
+      return RawBound{.key = InetKey(*inet)};
     }
     case CurveFamily::Null:
       return std::nullopt;
@@ -332,7 +360,7 @@ uint64_t MapDouble(const CurveAxis& axis, double value) noexcept {
 
 uint64_t InetAxisKey(const CurveAxis& axis, InetValue value) noexcept {
   return axis.ipv6_range ? Ipv6RangeKey(axis, value)
-                         : MapKey(axis, InetKey(value.ip_type, value.address));
+                         : MapKey(axis, InetKey(value));
 }
 
 template<typename T>
@@ -350,8 +378,8 @@ bool IsValid(const CurveAxis& axis,
   if (axis.family != CurveFamily::Inet) {
     return true;
   }
-  for (const auto& child : {&format.children[0], &format.children[1]}) {
-    const auto& part = child->unified;
+  for (const auto& child : format.children) {
+    const auto& part = child.unified;
     if (!part.validity.RowIsValid(part.sel->get_index(row))) {
       return false;
     }
@@ -372,12 +400,14 @@ uint64_t AxisKey(const CurveAxis& axis,
     return MapKey(axis, UnsignedKey(value, width));
   };
   if (axis.family == CurveFamily::Inet) {
-    const auto& type = format.children[0].unified;
-    const auto& address = format.children[1].unified;
+    const auto& type = format.children[pg::kInetIpTypeChild].unified;
+    const auto& address = format.children[pg::kInetAddressChild].unified;
+    const auto& mask = format.children[pg::kInetMaskChild].unified;
     return InetAxisKey(
-      axis, {.ip_type = Load<uint8_t>(type, type.sel->get_index(row)),
-             .address =
-               Load<duckdb::hugeint_t>(address, address.sel->get_index(row))});
+      axis,
+      StoredInet(Load<uint8_t>(type, type.sel->get_index(row)),
+                 Load<duckdb::hugeint_t>(address, address.sel->get_index(row)),
+                 Load<uint16_t>(mask, mask.sel->get_index(row))));
   }
   switch (axis.type.id()) {
     case TINYINT:
@@ -484,8 +514,8 @@ const duckdb::Value* BoundComponent(const duckdb::Value& bounds,
 }
 
 constexpr std::string_view kInetBoundsNeed =
-  "INET bounds with lower < upper on the curve; masks do not change the "
-  "position";
+  "INET bounds with lower < upper on the curve, which places a value at its "
+  "network";
 
 void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
                const duckdb::Value* lower, const duckdb::Value* upper) {
@@ -502,8 +532,8 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
     const auto lo = ToInet(*lower);
     const auto hi = ToInet(*upper);
     if (lo && hi && lo->ip_type == kInetV6 && hi->ip_type == kInetV6) {
-      axis.ipv6_lo = Ipv6Address(lo->address);
-      axis.ipv6_hi = Ipv6Address(hi->address);
+      axis.ipv6_lo = lo->network;
+      axis.ipv6_hi = hi->network;
       if (axis.ipv6_lo >= axis.ipv6_hi) {
         ThrowBadBounds(context, index, kInetBoundsNeed, *lower, *upper);
       }
@@ -549,7 +579,9 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
 std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
                                       const duckdb::Value& bound) {
   if (axis.family == CurveFamily::Inet) {
-    const auto inet = ToInet(bound);
+    const auto inet = bound.type().id() == duckdb::LogicalTypeId::BLOB
+                        ? DecodeInet(bound)
+                        : ToInet(bound);
     if (!inet) {
       return std::nullopt;
     }
