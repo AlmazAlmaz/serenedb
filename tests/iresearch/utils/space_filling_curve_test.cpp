@@ -18,11 +18,13 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include <absl/algorithm/container.h>
 #include <gtest/gtest.h>
 
 #include <iresearch/utils/space_filling_curve.hpp>
-#include <random>
+#include <pcg_random.hpp>
 #include <set>
+#include <span>
 
 namespace {
 
@@ -149,7 +151,7 @@ std::vector<std::string> IndexedPoint(const Point& point,
 }
 
 TEST(SpaceFillingCurve, EncodeMatchesBitwiseReference) {
-  std::mt19937_64 random{8137109};
+  pcg64 random{8137109};
   for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
     SCOPED_TRACE(dimensions);
     const auto edges = EdgePoints(dimensions);
@@ -172,7 +174,7 @@ TEST(SpaceFillingCurve, EncodeMatchesBitwiseReference) {
 }
 
 TEST(SpaceFillingCurve, PointTermsMatchBitwiseReference) {
-  std::mt19937_64 random{641917};
+  pcg64 random{641917};
   for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
     SCOPED_TRACE(dimensions);
     for (bool hilbert : {false, true}) {
@@ -253,7 +255,7 @@ TEST(SpaceFillingCurve, NormalizedKeys) {
 }
 
 TEST(SpaceFillingCurve, LeafCodeIsTruncatedEncoding) {
-  std::mt19937_64 random{1137};
+  pcg64 random{1137};
   for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
     SCOPED_TRACE(dimensions);
     for (bool hilbert : {false, true}) {
@@ -284,8 +286,8 @@ TEST(SpaceFillingCurve, MortonReference) {
   const auto encoded =
     Encode({0x8000000000000000, 0x4000000000000000}, 2, false);
   EXPECT_EQ(encoded[0], 0x90);
-  EXPECT_TRUE(std::all_of(encoded.begin() + 1, encoded.end(),
-                          [](uint8_t b) { return b == 0; }));
+  EXPECT_TRUE(absl::c_all_of(std::span{encoded}.subspan(1),
+                             [](uint8_t b) { return b == 0; }));
 }
 
 TEST(SpaceFillingCurve, LindelHilbertReference) {
@@ -347,7 +349,7 @@ TEST(SpaceFillingCurve, HilbertLocalityAndPrefixes) {
 }
 
 TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
-  std::mt19937_64 random{1099};
+  pcg64 random{1099};
   for (uint32_t dimensions : {2, 3, 4, 8}) {
     for (bool hilbert : {false, true}) {
       for (uint32_t budget : {1, 4, 64}) {
@@ -388,7 +390,7 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
 }
 
 TEST(SpaceFillingCurve, LevelStepNarrowsPointCandidates) {
-  std::mt19937_64 random{2026};
+  pcg64 random{2026};
   for (uint32_t dimensions : {2, 3, 4}) {
     for (uint32_t step = 2; step <= MaxLevelStep(dimensions); ++step) {
       const Options coarse{.dimensions = dimensions, .max_cells = 16};
@@ -470,7 +472,7 @@ TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
 }
 
 TEST(SpaceFillingCurve, EncodedCellPrefixContainsAllCorners) {
-  std::mt19937_64 random{1317813};
+  pcg64 random{1317813};
   uint64_t corners = 0;
   for (uint32_t dimensions = 2; dimensions <= kMaxDimensions; ++dimensions) {
     for (bool hilbert : {false, true}) {
@@ -506,7 +508,7 @@ TEST(SpaceFillingCurve, EncodedCellPrefixContainsAllCorners) {
 }
 
 TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
-  std::mt19937_64 random{131721};
+  pcg64 random{131721};
   uint64_t comparisons = 0;
   for (const auto [lo, hi] :
        {std::pair{-1e308, 0.0}, std::pair{0.0, 1e308},
