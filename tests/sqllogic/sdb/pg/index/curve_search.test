@@ -248,6 +248,23 @@ SELECT curve(1, 2, kind := 'peano');
 db error: ERROR: curve(): option "kind" must be 'morton' or 'hilbert', got 'peano'
 
 
+statement error No function matches the given name and argument types 'curve\(INTEGER_LITERAL, INTEGER_LITERAL, "kinds" := STRING_LITERAL\)'
+SELECT curve(1, 2, kinds := 'hilbert');
+
+
+statement error
+SELECT curve(1, 2, kind := 'hilbert', kind := 'morton');
+----
+db error: ERROR: Duplicate named argument "kind" in function call to "curve"
+
+
+query
+SELECT curve(1, 2, max_level := 3, kind := 'hilbert') = curve(1, 2, kind := 'hilbert', max_level := 3) AS same;
+----
+same
+t
+
+
 statement error
 SELECT curve(1, 2, max_level := 65);
 ----
