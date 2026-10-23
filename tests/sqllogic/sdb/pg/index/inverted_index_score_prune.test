@@ -19,6 +19,9 @@ hash-threshold 100
 # ---------------------------------------------------------------------------
 
 statement ok
+SET disabled_optimizers = 'late_materialization';
+
+statement ok
 CREATE TEXT SEARCH DICTIONARY en_prune AS
     split_text() | normalize_tokens('en_US.UTF-8', accent := false)
     WITH (frequency, position, norm);
