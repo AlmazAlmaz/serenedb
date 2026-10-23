@@ -29,6 +29,7 @@
 #include <iresearch/analysis/tokenizer.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <optional>
+#include <span>
 #include <variant>
 
 namespace sdb::connector {
@@ -100,10 +101,13 @@ struct CurveSpec final : public duckdb::FunctionData {
 };
 
 duckdb::unique_ptr<CurveSpec> BindCurveSpec(
-  duckdb::ClientContext& context,
+  duckdb::ClientContext& context, const duckdb::FunctionSignature& signature,
   duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& args);
 
 const CurveSpec* TryGetCurveSpec(const duckdb::Expression& expression);
+
+std::span<const duckdb::unique_ptr<duckdb::Expression>> CurveCoordinates(
+  const duckdb::Expression& curve);
 
 void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
                       duckdb::Vector& result);

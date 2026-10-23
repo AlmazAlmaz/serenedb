@@ -26,6 +26,7 @@
 #include <duckdb/common/vector/constant_vector.hpp>
 #include <duckdb/common/vector/flat_vector.hpp>
 #include <duckdb/common/vector/string_vector.hpp>
+#include <duckdb/common/vector/struct_vector.hpp>
 #include <duckdb/common/vector/unified_vector_format.hpp>
 #include <duckdb/execution/expression_executor.hpp>
 #include <duckdb/planner/expression/bound_constant_expression.hpp>
@@ -42,16 +43,8 @@ namespace {
 
 inline constexpr std::string_view kMortonCurve = "morton";
 inline constexpr std::string_view kHilbertCurve = "hilbert";
-
-enum CurveOption : size_t {
-  kKindOption,
-  kMaxLevelOption,
-  kLevelStepOption,
-  kMaxCellsOption,
-  kLowerOption,
-  kUpperOption,
-  kOptionCount,
-};
+inline constexpr std::string_view kRowFunction = "row";
+inline constexpr std::string_view kStructPackFunction = "struct_pack";
 
 inline constexpr std::string_view kCoordinateTypes =
   "an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET";
@@ -265,15 +258,18 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
       if (is_signed) {
         const auto value = bound.GetValue<int64_t>();
         const auto clamped = std::clamp(value, -max - 1, max);
-        return RawBound{.key = SignedKey(clamped, width),
-                        .exact = clamped == value};
+        return RawBound{
+          .key = SignedKey(clamped, width),
+          .exact = clamped == value,
+        };
       }
       if (is_unsigned) {
         const auto value = bound.GetValue<uint64_t>();
         const auto limit = static_cast<uint64_t>(max);
         return RawBound{
           .key = SignedKey(static_cast<int64_t>(std::min(value, limit)), width),
-          .exact = value <= limit};
+          .exact = value <= limit,
+        };
       }
       return std::nullopt;
     }
@@ -281,15 +277,19 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
       const auto max = std::numeric_limits<uint64_t>::max() >> (64 - width);
       if (is_unsigned) {
         const auto value = bound.GetValue<uint64_t>();
-        return RawBound{.key = UnsignedKey(std::min(value, max), width),
-                        .exact = value <= max};
+        return RawBound{
+          .key = UnsignedKey(std::min(value, max), width),
+          .exact = value <= max,
+        };
       }
       if (is_signed) {
         const auto value = bound.GetValue<int64_t>();
         const auto clamped =
           value < 0 ? 0 : std::min(static_cast<uint64_t>(value), max);
-        return RawBound{.key = UnsignedKey(clamped, width),
-                        .exact = static_cast<uint64_t>(value) == clamped};
+        return RawBound{
+          .key = UnsignedKey(clamped, width),
+          .exact = static_cast<uint64_t>(value) == clamped,
+        };
       }
       return std::nullopt;
     }
@@ -300,21 +300,26 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
       if (is_signed) {
         const auto value = bound.GetValue<int64_t>();
         const auto converted = static_cast<double>(value);
-        return RawBound{.value = converted,
-                        .exact = converted >= -0x1p63 && converted < 0x1p63 &&
-                                 static_cast<int64_t>(converted) == value};
+        return RawBound{
+          .value = converted,
+          .exact = converted >= -0x1p63 && converted < 0x1p63 &&
+                   static_cast<int64_t>(converted) == value,
+        };
       }
       if (is_unsigned) {
         const auto value = bound.GetValue<uint64_t>();
         const auto converted = static_cast<double>(value);
-        return RawBound{.value = converted,
-                        .exact = converted < 0x1p64 &&
-                                 static_cast<uint64_t>(converted) == value};
+        return RawBound{
+          .value = converted,
+          .exact =
+            converted < 0x1p64 && static_cast<uint64_t>(converted) == value,
+        };
       }
       if (type == DECIMAL) {
-        return RawBound{.value =
-                          bound.DefaultCastAs(duckdb::LogicalType::DOUBLE)
-                            .GetValue<double>()};
+        return RawBound{
+          .value =
+            bound.DefaultCastAs(duckdb::LogicalType::DOUBLE).GetValue<double>(),
+        };
       }
       return std::nullopt;
     case CurveFamily::Date:
@@ -323,21 +328,26 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
       }
       return RawBound{
         .key = SignedKey(bound.GetValue<duckdb::date_t>().days, width),
-        .exact = true};
+        .exact = true,
+      };
     case CurveFamily::Timestamp:
       if (type != TIMESTAMP) {
         return std::nullopt;
       }
-      return RawBound{.key = irs::curve::EncodeSigned(
-                        bound.GetValue<duckdb::timestamp_t>().value),
-                      .exact = true};
+      return RawBound{
+        .key =
+          irs::curve::EncodeSigned(bound.GetValue<duckdb::timestamp_t>().value),
+        .exact = true,
+      };
     case CurveFamily::TimestampTz:
       if (type != TIMESTAMP_TZ) {
         return std::nullopt;
       }
-      return RawBound{.key = irs::curve::EncodeSigned(
-                        bound.GetValue<duckdb::timestamp_tz_t>().value),
-                      .exact = true};
+      return RawBound{
+        .key = irs::curve::EncodeSigned(
+          bound.GetValue<duckdb::timestamp_tz_t>().value),
+        .exact = true,
+      };
     case CurveFamily::Inet: {
       const auto inet = ToInet(bound);
       if (!inet) {
@@ -594,11 +604,12 @@ std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
     return std::nullopt;
   }
   const bool injective = !Normalized(axis) && axis.family != CurveFamily::Inet;
-  return CurveKey{.key = axis.family == CurveFamily::Float
-                           ? MapDouble(axis, raw->value)
-                           : MapKey(axis, raw->key),
-                  .step = uint64_t{1} << KeyShift(axis),
-                  .exact = raw->exact && injective};
+  return CurveKey{
+    .key = axis.family == CurveFamily::Float ? MapDouble(axis, raw->value)
+                                             : MapKey(axis, raw->key),
+    .step = uint64_t{1} << KeyShift(axis),
+    .exact = raw->exact && injective,
+  };
 }
 
 CurveInterval CurveLimits(const CurveAxis& axis) noexcept {
@@ -625,10 +636,18 @@ bool CurveSpec::Equals(const duckdb::FunctionData& other) const {
 }
 
 duckdb::unique_ptr<CurveSpec> BindCurveSpec(
-  duckdb::ClientContext& context,
+  duckdb::ClientContext& context, const duckdb::FunctionSignature& signature,
   duckdb::vector<duckdb::unique_ptr<duckdb::Expression>>& args) {
-  SDB_ASSERT(args.size() >= kOptionCount);
-  const auto dimensions = args.size() - kOptionCount;
+  SDB_ASSERT(!args.empty());
+  const auto& point = args[0]->GetReturnType();
+  if (!duckdb::StructType::IsStruct(point) || pg::IsInetOrCidr(point)) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
+                    ERR_MSG("curve(): the point must be a ROW of 2 to ",
+                            irs::curve::kMaxDimensions, " coordinates, got ",
+                            point.ToString()));
+  }
+  const auto& coordinates = duckdb::StructType::GetChildTypes(point);
+  const auto dimensions = coordinates.size();
   if (dimensions < 2 || dimensions > irs::curve::kMaxDimensions) {
     THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
                     ERR_MSG("curve(): takes 2 to ", irs::curve::kMaxDimensions,
@@ -638,7 +657,7 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
   auto& options = spec->options;
   options.dimensions = static_cast<uint32_t>(dimensions);
   for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
-    const auto& type = args[axis]->GetReturnType();
+    const auto& type = coordinates[axis].second;
     const auto family = CoordinateFamily(type);
     if (!family) {
       THROW_SQL_ERROR(ERR_CODE(ERRCODE_DATATYPE_MISMATCH),
@@ -648,11 +667,18 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
     spec->axes[axis].type = type;
     spec->axes[axis].family = *family;
   }
-  const auto option = [&](CurveOption index, std::string_view name) {
-    return OptionValue(context, args[dimensions + index], name);
+  const auto argument =
+    [&](std::string_view name) -> duckdb::unique_ptr<duckdb::Expression>& {
+    const auto index =
+      signature.GetParameterIndexByName(duckdb::Identifier{name});
+    SDB_ASSERT(index.IsValid() && index.GetIndex() < args.size());
+    return args[index.GetIndex()];
+  };
+  const auto option = [&](std::string_view name) {
+    return OptionValue(context, argument(name), name);
   };
 
-  const auto kind = option(kKindOption, "kind");
+  const auto kind = option("kind");
   const auto curve = kind.IsNull()
                        ? std::string{kMortonCurve}
                        : absl::AsciiStrToLower(duckdb::StringValue::Get(kind));
@@ -662,23 +688,23 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
                             "' or '", kHilbertCurve, "', got '", curve, "'"));
   }
   options.hilbert = curve == kHilbertCurve;
-  const auto max_level = option(kMaxLevelOption, "max_level");
+  const auto max_level = option("max_level");
   if (!max_level.IsNull()) {
     options.max_level =
       LimitOption(max_level, "max_level", 0, irs::curve::kMaxLevel);
   }
-  const auto step = option(kLevelStepOption, "level_step");
+  const auto step = option("level_step");
   options.level_step =
     step.IsNull() ? irs::curve::DefaultLevelStep(options.dimensions)
                   : LimitOption(step, "level_step", 1,
                                 irs::curve::MaxLevelStep(options.dimensions));
-  const auto cells = option(kMaxCellsOption, "max_cells");
+  const auto cells = option("max_cells");
   options.max_cells =
     cells.IsNull() ? irs::curve::DefaultMaxCells(options.dimensions)
                    : LimitOption(cells, "max_cells", 1, irs::curve::kMaxCells);
 
-  const auto lower = option(kLowerOption, "lower");
-  const auto upper = option(kUpperOption, "upper");
+  const auto lower = option("lower");
+  const auto upper = option("upper");
   bool normalized = false;
   for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
     Normalize(context, spec->axes[axis], axis,
@@ -693,19 +719,19 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
         std::max(options.max_level, AxisBits(spec->axes[axis]));
     }
   }
-  ReplaceOption(args[dimensions + kKindOption], duckdb::Value{curve});
+  ReplaceOption(argument("kind"), duckdb::Value{curve});
   ReplaceOption(
-    args[dimensions + kMaxLevelOption],
+    argument("max_level"),
     duckdb::Value::INTEGER(static_cast<int32_t>(options.max_level)));
   ReplaceOption(
-    args[dimensions + kLevelStepOption],
+    argument("level_step"),
     duckdb::Value::INTEGER(static_cast<int32_t>(options.level_step)));
   ReplaceOption(
-    args[dimensions + kMaxCellsOption],
+    argument("max_cells"),
     duckdb::Value::INTEGER(static_cast<int32_t>(options.max_cells)));
   if (!normalized) {
-    ReplaceOption(args[dimensions + kLowerOption], duckdb::Value{});
-    ReplaceOption(args[dimensions + kUpperOption], duckdb::Value{});
+    ReplaceOption(argument("lower"), duckdb::Value{});
+    ReplaceOption(argument("upper"), duckdb::Value{});
   }
   return spec;
 }
@@ -723,27 +749,49 @@ const CurveSpec* TryGetCurveSpec(const duckdb::Expression& expression) {
   return &function.BindInfo()->Cast<CurveSpec>();
 }
 
+std::span<const duckdb::unique_ptr<duckdb::Expression>> CurveCoordinates(
+  const duckdb::Expression& curve) {
+  const auto& point =
+    *curve.Cast<duckdb::BoundFunctionExpression>().GetChildren()[0];
+  if (point.GetExpressionClass() != duckdb::ExpressionClass::BOUND_FUNCTION) {
+    return {};
+  }
+  const auto& constructor = point.Cast<duckdb::BoundFunctionExpression>();
+  const auto name = constructor.Function().GetName().GetIdentifierName();
+  if (name != kRowFunction && name != kStructPackFunction) {
+    return {};
+  }
+  return constructor.GetChildren();
+}
+
 void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
                       duckdb::Vector& result) {
-  const auto count = args.size();
   const auto dimensions = spec.options.dimensions;
-  std::array<duckdb::RecursiveUnifiedVectorFormat, irs::curve::kMaxDimensions>
-    formats;
   for (uint32_t axis = 0; axis < dimensions; ++axis) {
     if (spec.axes[axis].family == CurveFamily::Null) {
       result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
       duckdb::ConstantVector::SetNull(result, true);
       return;
     }
-    duckdb::Vector::RecursiveToUnifiedFormat(args.data[axis], formats[axis]);
+  }
+  const bool constant = args.AllConstant();
+  const auto count = constant ? 1 : args.size();
+  auto& point = args.data[0];
+  point.Flatten(count);
+  const auto& validity = duckdb::FlatVector::Validity(point);
+  auto& coordinates = duckdb::StructVector::GetEntries(point);
+  std::array<duckdb::RecursiveUnifiedVectorFormat, irs::curve::kMaxDimensions>
+    formats;
+  for (uint32_t axis = 0; axis < dimensions; ++axis) {
+    duckdb::Vector::RecursiveToUnifiedFormat(coordinates[axis], formats[axis]);
   }
   result.SetVectorType(duckdb::VectorType::FLAT_VECTOR);
   auto* out = duckdb::FlatVector::GetDataMutable<duckdb::string_t>(result);
-  irs::curve::Point point;
-  point.fill(0);
+  irs::curve::Point keys;
+  keys.fill(0);
   irs::curve::Code code;
   for (duckdb::idx_t row = 0; row < count; ++row) {
-    bool valid = true;
+    bool valid = validity.RowIsValid(row);
     for (uint32_t axis = 0; axis < dimensions && valid; ++axis) {
       valid = IsValid(spec.axes[axis], formats[axis], row);
     }
@@ -752,13 +800,13 @@ void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
       continue;
     }
     for (uint32_t axis = 0; axis < dimensions; ++axis) {
-      point[axis] = AxisKey(spec.axes[axis], formats[axis], row);
+      keys[axis] = AxisKey(spec.axes[axis], formats[axis], row);
     }
-    const auto size = irs::curve::LeafCode(point, spec.options, code.data());
+    const auto size = irs::curve::LeafCode(keys, spec.options, code.data());
     out[row] = duckdb::StringVector::AddStringOrBlob(
       result, reinterpret_cast<const char*>(code.data()), size);
   }
-  if (args.AllConstant()) {
+  if (constant) {
     result.SetVectorType(duckdb::VectorType::CONSTANT_VECTOR);
   }
 }

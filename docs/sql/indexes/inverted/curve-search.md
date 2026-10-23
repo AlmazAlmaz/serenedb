@@ -6,16 +6,20 @@ split: headings
 
 import SqlLogicTest from "@site/src/components/SqlLogicTest";
 
-`curve(...)` maps two to eight values to a position on a space-filling curve.
-An inverted index on that expression answers multidimensional range queries
-with bounded coverings and an exact check of the candidates.
+`curve(ROW(...))` maps a point of two to eight values to a position on a
+space-filling curve. An inverted index on that expression answers
+multidimensional range queries with bounded coverings and an exact check of the
+candidates.
 
 ## The curve function
 
-`curve(c1, ..., cN)` is an ordinary scalar function: it can be selected,
+`curve(ROW(c1, ..., cN))` is an ordinary scalar function: it can be selected,
 compared, stored or used in `ORDER BY`, which sorts the rows along the curve.
-It returns the code of the point's deepest cell as a BLOB, and NULL when any
-coordinate is NULL. The options are named arguments with constant values:
+Its first argument is the point, a `ROW(...)` or a STRUCT of two to eight
+coordinates, which can have different types. It returns the code of the
+point's deepest cell as a BLOB, and NULL when the point or any coordinate is
+NULL. The options follow the point as named arguments with constant values; an
+unknown or repeated name is an error:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -42,12 +46,15 @@ exact check, query the index by name and match the same call with
 <SqlLogicTest id="sql/indexes/inverted/curve-search/points" />
 
 The left side must be the indexed call itself: the same coordinates and the
-same options. `lower` and `upper` are `ROW(...)`s with one bound per
+same options. The indexed point must be written as `ROW(...)` or a struct
+literal of the coordinates, which the exact check compares; a call on a STRUCT
+column can be indexed but not searched. `lower` and `upper` are `ROW(...)`s
+with one bound per
 coordinate. A NULL component, or a NULL `ROW`, leaves that side of that
 coordinate open, and an inverted interval matches nothing. The inclusivity
 flags apply to every coordinate; for mixed endpoints, write ordinary ranges.
 The condition holds when every coordinate is within its bounds, so a row with
-a NULL coordinate never matches, as its `curve(...)` value is NULL.
+a NULL coordinate never matches, as its `curve(ROW(...))` value is NULL.
 
 The index selects candidates with a covering of the box, and the condition is
 replaced by the exact comparisons of the coordinates, `x >= 0 AND x <= 10` and
@@ -66,7 +73,7 @@ Ordinary ranges also use the curve when every coordinate of an indexed call
 has both a lower and an upper constant bound. Supported predicates are
 `BETWEEN`, `>=`, `<=`, `>`, `<` and `=`; equality supplies both endpoints, and
 several ranges on one coordinate are intersected. Coordinates match the
-arguments of the indexed call, also through order-preserving widening casts
+components of the indexed point, also through order-preserving widening casts
 within the signed or unsigned integer family and from FLOAT to DOUBLE. The
 covering selects candidates; the original predicates stay as the exact check.
 

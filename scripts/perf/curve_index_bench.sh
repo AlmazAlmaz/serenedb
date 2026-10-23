@@ -113,9 +113,9 @@ sql "INSERT INTO ind SELECT i, ((i*48271)%${X_MOD})::DOUBLE/${SCALE},
 sql "CREATE TABLE cor(id BIGINT PRIMARY KEY, x DOUBLE, y DOUBLE, z DOUBLE)"
 sql "INSERT INTO cor SELECT id, x, x+(id%7-3)*0.1, x+(id%11-5)*0.1 FROM ind"
 
-CURVE="curve(x, y, z)"
-CURVE32="curve(x, y, z, max_level := 32)"
-NORM32="curve(x, y, z, max_level := 32, lower := ROW(-1, -1, -1), upper := ROW(1001, 1001, 1001))"
+CURVE="curve(ROW(x, y, z))"
+CURVE32="curve(ROW(x, y, z), max_level := 32)"
+NORM32="curve(ROW(x, y, z), max_level := 32, lower := ROW(-1, -1, -1), upper := ROW(1001, 1001, 1001))"
 
 for t in ind cor; do
 	g=$(seconds "CREATE INDEX ${t}_granular ON ${t} USING inverted(id, x, y, z)${INDEX_OPTIONS}; VACUUM (REFRESH_TABLE) ${t}")
