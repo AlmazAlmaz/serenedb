@@ -40,8 +40,8 @@
 namespace sdb::connector {
 namespace {
 
-constexpr std::string_view kMortonCurve = "morton";
-constexpr std::string_view kHilbertCurve = "hilbert";
+inline constexpr std::string_view kMortonCurve = "morton";
+inline constexpr std::string_view kHilbertCurve = "hilbert";
 
 enum CurveOption : size_t {
   kKindOption,
@@ -53,11 +53,11 @@ enum CurveOption : size_t {
   kOptionCount,
 };
 
-constexpr std::string_view kCoordinateTypes =
+inline constexpr std::string_view kCoordinateTypes =
   "an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET";
 
-constexpr uint8_t kInetV4 = 1;
-constexpr uint8_t kInetV6 = 2;
+inline constexpr uint8_t kInetV4 = 1;
+inline constexpr uint8_t kInetV6 = 2;
 
 std::optional<CurveFamily> CoordinateFamily(const duckdb::LogicalType& type) {
   using enum duckdb::LogicalTypeId;
@@ -129,9 +129,14 @@ uint32_t KeyWidth(const CurveAxis& axis) noexcept {
   }
 }
 
+bool Normalized(const CurveAxis& axis) noexcept {
+  return !std::holds_alternative<std::monostate>(axis.range);
+}
+
 uint32_t KeyShift(const CurveAxis& axis) noexcept {
   if (axis.family == CurveFamily::Inet) {
-    return axis.normalized && axis.key_hi < irs::curve::kSignBit ? 31 : 0;
+    const auto* keys = std::get_if<CurveKeyRange>(&axis.range);
+    return keys && keys->hi < irs::curve::kSignBit ? 31 : 0;
   }
   return 64 - KeyWidth(axis);
 }
@@ -140,19 +145,19 @@ uint32_t AxisBits(const CurveAxis& axis) noexcept {
   if (axis.family == CurveFamily::Null) {
     return 0;
   }
-  if (!axis.normalized) {
-    return 64 - KeyShift(axis);
+  if (const auto* keys = std::get_if<CurveKeyRange>(&axis.range)) {
+    return std::bit_width(keys->hi - keys->lo) - KeyShift(axis);
   }
-  if (axis.ipv6_range) {
-    const auto span = axis.ipv6_hi - axis.ipv6_lo;
+  if (const auto* ipv6 = std::get_if<CurveIpv6Range>(&axis.range)) {
+    const auto span = ipv6->hi - ipv6->lo;
     return absl::Uint128High64(span) == 0
              ? std::bit_width(absl::Uint128Low64(span))
              : 64;
   }
-  if (axis.family == CurveFamily::Float) {
+  if (std::holds_alternative<CurveDoubleRange>(axis.range)) {
     return 64;
   }
-  return std::bit_width(axis.key_hi - axis.key_lo) - KeyShift(axis);
+  return 64 - KeyShift(axis);
 }
 
 struct InetValue {
@@ -215,13 +220,12 @@ std::optional<InetValue> ToInet(const duckdb::Value& bound) {
   return DecodeInet(bound);
 }
 
-uint64_t Ipv6RangeKey(const CurveAxis& axis, InetValue value) noexcept {
+uint64_t Ipv6RangeKey(const CurveIpv6Range& range, InetValue value) noexcept {
   if (value.ip_type != kInetV6) {
     return 0;
   }
-  const auto offset =
-    std::clamp(value.network, axis.ipv6_lo, axis.ipv6_hi) - axis.ipv6_lo;
-  const auto span = axis.ipv6_hi - axis.ipv6_lo;
+  const auto offset = std::clamp(value.network, range.lo, range.hi) - range.lo;
+  const auto span = range.hi - range.lo;
   const auto high = absl::Uint128High64(span);
   if (high == 0) {
     return absl::Uint128Low64(offset)
@@ -348,19 +352,21 @@ std::optional<RawBound> ToRaw(const CurveAxis& axis,
 }
 
 uint64_t MapKey(const CurveAxis& axis, uint64_t key) noexcept {
-  return axis.normalized
-           ? irs::curve::NormalizeKey(key, axis.key_lo, axis.key_hi)
-           : key;
+  const auto* keys = std::get_if<CurveKeyRange>(&axis.range);
+  return keys ? irs::curve::NormalizeKey(key, keys->lo, keys->hi) : key;
 }
 
 uint64_t MapDouble(const CurveAxis& axis, double value) noexcept {
-  return axis.normalized ? irs::curve::NormalizeDouble(value, axis.lo, axis.hi)
-                         : irs::curve::EncodeDouble(value);
+  const auto* values = std::get_if<CurveDoubleRange>(&axis.range);
+  return values ? irs::curve::NormalizeDouble(value, values->lo, values->hi)
+                : irs::curve::EncodeDouble(value);
 }
 
 uint64_t InetAxisKey(const CurveAxis& axis, InetValue value) noexcept {
-  return axis.ipv6_range ? Ipv6RangeKey(axis, value)
-                         : MapKey(axis, InetKey(value));
+  if (const auto* ipv6 = std::get_if<CurveIpv6Range>(&axis.range)) {
+    return Ipv6RangeKey(*ipv6, value);
+  }
+  return MapKey(axis, InetKey(value));
 }
 
 template<typename T>
@@ -513,7 +519,7 @@ const duckdb::Value* BoundComponent(const duckdb::Value& bounds,
                           ", got ", text(lower), " and ", text(upper)));
 }
 
-constexpr std::string_view kInetBoundsNeed =
+inline constexpr std::string_view kInetBoundsNeed =
   "INET bounds with lower < upper on the curve, which places a value at its "
   "network";
 
@@ -532,13 +538,10 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
     const auto lo = ToInet(*lower);
     const auto hi = ToInet(*upper);
     if (lo && hi && lo->ip_type == kInetV6 && hi->ip_type == kInetV6) {
-      axis.ipv6_lo = lo->network;
-      axis.ipv6_hi = hi->network;
-      if (axis.ipv6_lo >= axis.ipv6_hi) {
+      if (lo->network >= hi->network) {
         ThrowBadBounds(context, index, kInetBoundsNeed, *lower, *upper);
       }
-      axis.normalized = true;
-      axis.ipv6_range = true;
+      axis.range = CurveIpv6Range{.lo = lo->network, .hi = hi->network};
       return;
     }
   }
@@ -560,18 +563,17 @@ void Normalize(duckdb::ClientContext& context, CurveAxis& axis, uint32_t index,
       ThrowBadBounds(context, index, "bounds with a finite difference", *lower,
                      *upper);
     }
-  } else if (lo->key >= hi->key) {
+    axis.range = CurveDoubleRange{.lo = lo->value, .hi = hi->value};
+    return;
+  }
+  if (lo->key >= hi->key) {
     ThrowBadBounds(context, index,
                    axis.family == CurveFamily::Inet
                      ? kInetBoundsNeed
                      : std::string_view{"bounds with lower < upper"},
                    *lower, *upper);
   }
-  axis.normalized = true;
-  axis.key_lo = lo->key;
-  axis.key_hi = hi->key;
-  axis.lo = lo->value;
-  axis.hi = hi->value;
+  axis.range = CurveKeyRange{.lo = lo->key, .hi = hi->key};
 }
 
 }  // namespace
@@ -591,7 +593,7 @@ std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
   if (!raw) {
     return std::nullopt;
   }
-  const bool injective = !axis.normalized && axis.family != CurveFamily::Inet;
+  const bool injective = !Normalized(axis) && axis.family != CurveFamily::Inet;
   return CurveKey{.key = axis.family == CurveFamily::Float
                            ? MapDouble(axis, raw->value)
                            : MapKey(axis, raw->key),
@@ -601,7 +603,7 @@ std::optional<CurveKey> CurveBoundKey(const CurveAxis& axis,
 
 CurveInterval CurveLimits(const CurveAxis& axis) noexcept {
   constexpr auto kMax = std::numeric_limits<uint64_t>::max();
-  if (axis.normalized) {
+  if (Normalized(axis)) {
     return {.max = kMax};
   }
   if (axis.family == CurveFamily::Float) {
@@ -682,7 +684,7 @@ duckdb::unique_ptr<CurveSpec> BindCurveSpec(
     Normalize(context, spec->axes[axis], axis,
               BoundComponent(lower, "lower", axis, options.dimensions),
               BoundComponent(upper, "upper", axis, options.dimensions));
-    normalized |= spec->axes[axis].normalized;
+    normalized |= Normalized(spec->axes[axis]);
   }
   if (max_level.IsNull()) {
     options.max_level = 0;

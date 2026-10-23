@@ -41,7 +41,7 @@
 namespace sdb::connector {
 namespace {
 
-constexpr std::string_view kInetSortKey = "inet_sort_key";
+inline constexpr std::string_view kInetSortKey = "inet_sort_key";
 
 const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
   if (duckdb::BoundCastExpression::IsCast(expr)) {

@@ -29,6 +29,7 @@
 #include <iresearch/analysis/tokenizer.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <optional>
+#include <variant>
 
 namespace sdb::connector {
 
@@ -56,17 +57,32 @@ struct CurveInterval {
   uint64_t max = 0;
 };
 
+struct CurveKeyRange {
+  uint64_t lo = 0;
+  uint64_t hi = 0;
+
+  bool operator==(const CurveKeyRange&) const = default;
+};
+
+struct CurveDoubleRange {
+  double lo = 0;
+  double hi = 0;
+
+  bool operator==(const CurveDoubleRange&) const = default;
+};
+
+struct CurveIpv6Range {
+  absl::uint128 lo = 0;
+  absl::uint128 hi = 0;
+
+  bool operator==(const CurveIpv6Range&) const = default;
+};
+
 struct CurveAxis {
   duckdb::LogicalType type;
   CurveFamily family = CurveFamily::Null;
-  bool normalized = false;
-  uint64_t key_lo = 0;
-  uint64_t key_hi = 0;
-  double lo = 0;
-  double hi = 0;
-  bool ipv6_range = false;
-  absl::uint128 ipv6_lo = 0;
-  absl::uint128 ipv6_hi = 0;
+  std::variant<std::monostate, CurveKeyRange, CurveDoubleRange, CurveIpv6Range>
+    range;
 
   bool operator==(const CurveAxis&) const = default;
 };
