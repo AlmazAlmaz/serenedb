@@ -18,19 +18,20 @@
 /// Copyright holder is SereneDB GmbH, Berlin, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
+#include <absl/algorithm/container.h>
 #include <absl/container/btree_map.h>
-#include <absl/container/flat_hash_map.h>
+#include <absl/random/distributions.h>
 #include <benchmark/benchmark.h>
 
+#include <iresearch/utils/containers/flat_hash_map.hpp>
 #include <iresearch/utils/space_filling_curve.hpp>
-#include <numeric>
-#include <random>
+#include <pcg_random.hpp>
 
 namespace {
 
 using namespace irs::curve;
 using Posting = std::vector<uint32_t>;
-using Dictionary = absl::flat_hash_map<std::string, Posting>;
+using Dictionary = irs::containers::FlatHashMap<std::string, Posting>;
 
 struct Sample {
   std::vector<Point> points;
@@ -48,15 +49,14 @@ struct Sample {
               .hilbert = method == 2,
               .level_step = DefaultLevelStep(dimensions)},
       constrained{partial ? 1u : dimensions} {
-    std::mt19937_64 random{1099};
-    std::uniform_real_distribution<double> values{0, 1000};
+    pcg64 random{1099};
+    const auto uniform = [&] { return absl::Uniform<double>(random, 0, 1000); };
     for (uint32_t id = 0; id < 8192; ++id) {
       Point point;
       point.fill(0);
-      const auto shared = values(random);
+      const auto shared = uniform();
       for (uint32_t axis = 0; axis < dimensions; ++axis) {
-        const auto value =
-          correlated ? shared + values(random) * 0.01 : values(random);
+        const auto value = correlated ? shared + uniform() * 0.01 : uniform();
         point[axis] = EncodeDouble(value);
         if (method == 0) {
           for (uint32_t level = 0; level < 4; ++level) {
@@ -144,16 +144,15 @@ void CurveRanges(benchmark::State& state) {
   const Sample sample{static_cast<uint32_t>(state.range(0)),
                       state.range(1) != 0, state.range(2) != 0,
                       static_cast<uint32_t>(state.range(3)), method};
-  const auto expected = std::count_if(
-    sample.points.begin(), sample.points.end(), [&](const Point& p) {
-      for (uint32_t axis = 0; axis < sample.options.dimensions; ++axis) {
-        if (p[axis] < sample.query.min[axis] ||
-            p[axis] > sample.query.max[axis]) {
-          return false;
-        }
+  const auto expected = absl::c_count_if(sample.points, [&](const Point& p) {
+    for (uint32_t axis = 0; axis < sample.options.dimensions; ++axis) {
+      if (p[axis] < sample.query.min[axis] ||
+          p[axis] > sample.query.max[axis]) {
+        return false;
       }
-      return true;
-    });
+    }
+    return true;
+  });
   std::array<uint64_t, 4> result;
   result.fill(0);
   for (auto _ : state) {
