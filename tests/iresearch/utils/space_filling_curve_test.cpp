@@ -23,12 +23,10 @@
 
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <pcg_random.hpp>
-#include <set>
 #include <span>
 
+namespace irs::curve {
 namespace {
-
-using namespace irs::curve;
 
 Code ReferenceEncode(Point point, uint32_t dimensions, bool hilbert) {
   if (dimensions < 2 || dimensions > kMaxDimensions) {
@@ -134,7 +132,7 @@ std::vector<Point> EdgePoints(uint32_t dimensions) {
 bool Match(const std::vector<std::string>& indexed,
            const std::vector<std::string>& query) {
   for (const auto& term : indexed) {
-    if (std::binary_search(query.begin(), query.end(), term)) {
+    if (absl::c_binary_search(query, term)) {
       return true;
     }
   }
@@ -183,10 +181,12 @@ TEST(SpaceFillingCurve, PointTermsMatchBitwiseReference) {
         SCOPED_TRACE(max_level);
         for (uint32_t step = 1; step <= MaxLevelStep(dimensions); ++step) {
           SCOPED_TRACE(step);
-          const Options options{.dimensions = dimensions,
-                                .max_level = max_level,
-                                .hilbert = hilbert,
-                                .level_step = step};
+          const Options options{
+            .dimensions = dimensions,
+            .max_level = max_level,
+            .hilbert = hilbert,
+            .level_step = step,
+          };
           for (uint32_t sample = 0; sample < 4; ++sample) {
             Point point;
             for (uint32_t axis = 0; axis < kMaxDimensions; ++axis) {
@@ -262,7 +262,10 @@ TEST(SpaceFillingCurve, LeafCodeIsTruncatedEncoding) {
       for (uint32_t max_level : {0u, 1u, 7u, 33u, 64u}) {
         SCOPED_TRACE(max_level);
         const Options options{
-          .dimensions = dimensions, .max_level = max_level, .hilbert = hilbert};
+          .dimensions = dimensions,
+          .max_level = max_level,
+          .hilbert = hilbert,
+        };
         Point point;
         for (auto& value : point) {
           value = random();
@@ -314,9 +317,16 @@ TEST(SpaceFillingCurve, LindelHilbertReference) {
   }
 }
 
+struct EncodedPoint {
+  Code code;
+  Point point;
+
+  auto operator<=>(const EncodedPoint&) const = default;
+};
+
 TEST(SpaceFillingCurve, HilbertLocalityAndPrefixes) {
   for (uint32_t dimensions : {2, 3, 4}) {
-    std::vector<std::pair<Code, Point>> points;
+    std::vector<EncodedPoint> points;
     const uint32_t count = 1u << (dimensions * 2);
     for (uint32_t id = 0; id < count; ++id) {
       Point point;
@@ -326,13 +336,13 @@ TEST(SpaceFillingCurve, HilbertLocalityAndPrefixes) {
       }
       points.emplace_back(Encode(point, dimensions, true), point);
     }
-    std::ranges::sort(points);
+    absl::c_sort(points);
     for (size_t i = 1; i < points.size(); ++i) {
-      EXPECT_NE(points[i - 1].first, points[i].first);
+      EXPECT_NE(points[i - 1].code, points[i].code);
       uint64_t distance = 0;
       for (uint32_t axis = 0; axis < dimensions; ++axis) {
-        const auto a = points[i - 1].second[axis] >> 62;
-        const auto b = points[i].second[axis] >> 62;
+        const auto a = points[i - 1].point[axis] >> 62;
+        const auto b = points[i].point[axis] >> 62;
         distance += a > b ? a - b : b - a;
       }
       EXPECT_EQ(distance, 1);
@@ -355,10 +365,12 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
       for (uint32_t budget : {1, 4, 64}) {
         for (uint32_t step : {uint32_t{1}, DefaultLevelStep(dimensions),
                               MaxLevelStep(dimensions)}) {
-          const Options options{.dimensions = dimensions,
-                                .max_cells = budget,
-                                .hilbert = hilbert,
-                                .level_step = step};
+          const Options options{
+            .dimensions = dimensions,
+            .max_cells = budget,
+            .hilbert = hilbert,
+            .level_step = step,
+          };
           for (uint32_t trial = 0; trial < 8; ++trial) {
             Box box;
             Point inside;
@@ -395,7 +407,10 @@ TEST(SpaceFillingCurve, LevelStepNarrowsPointCandidates) {
     for (uint32_t step = 2; step <= MaxLevelStep(dimensions); ++step) {
       const Options coarse{.dimensions = dimensions, .max_cells = 16};
       const Options stepped{
-        .dimensions = dimensions, .max_cells = 16, .level_step = step};
+        .dimensions = dimensions,
+        .max_cells = 16,
+        .level_step = step,
+      };
       for (uint32_t trial = 0; trial < 64; ++trial) {
         Box box;
         for (uint32_t axis = 0; axis < dimensions; ++axis) {
@@ -434,7 +449,10 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
     for (bool hilbert : {false, true}) {
       for (uint32_t step : {1, 4, 7}) {
         const Options options{
-          .max_level = level, .hilbert = hilbert, .level_step = step};
+          .max_level = level,
+          .hilbert = hilbert,
+          .level_step = step,
+        };
         const Point point{EncodeSigned(5), EncodeSigned(-5)};
         const Box box{point, point};
         const auto query =
@@ -507,13 +525,22 @@ TEST(SpaceFillingCurve, EncodedCellPrefixContainsAllCorners) {
   RecordProperty("corners", corners);
 }
 
+struct DoubleBounds {
+  double lo;
+  double hi;
+};
+
 TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
   pcg64 random{131721};
   uint64_t comparisons = 0;
-  for (const auto [lo, hi] :
-       {std::pair{-1e308, 0.0}, std::pair{0.0, 1e308},
-        std::pair{-1e-300, 1e-300}, std::pair{0.0, 0x1p-1074},
-        std::pair{1000.0, 1000.0000000001}, std::pair{-0.0, 1.0}}) {
+  for (const auto [lo, hi] : {
+         DoubleBounds{.lo = -1e308, .hi = 0.0},
+         DoubleBounds{.lo = 0.0, .hi = 1e308},
+         DoubleBounds{.lo = -1e-300, .hi = 1e-300},
+         DoubleBounds{.lo = 0.0, .hi = 0x1p-1074},
+         DoubleBounds{.lo = 1000.0, .hi = 1000.0000000001},
+         DoubleBounds{.lo = -0.0, .hi = 1.0},
+       }) {
     std::vector<double> values{-INFINITY, lo,      std::nextafter(lo, hi),
                                0.0,       -0.0,    std::nextafter(hi, lo),
                                hi,        INFINITY};
@@ -521,7 +548,7 @@ TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
       const auto fraction = static_cast<double>(random() >> 11) * 0x1p-53;
       values.push_back(lo + fraction * (hi - lo));
     }
-    std::ranges::sort(values);
+    absl::c_sort(values);
     for (size_t i = 1; i < values.size(); ++i) {
       ASSERT_LE(NormalizeDouble(values[i - 1], lo, hi),
                 NormalizeDouble(values[i], lo, hi));
@@ -533,3 +560,4 @@ TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
 }
 
 }  // namespace
+}  // namespace irs::curve

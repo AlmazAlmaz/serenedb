@@ -484,7 +484,7 @@ inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
     }
   }
   absl::c_sort(terms);
-  terms.erase(std::unique(terms.begin(), terms.end()), terms.end());
+  terms.erase(std::ranges::unique(terms).begin(), terms.end());
   return terms;
 }
 

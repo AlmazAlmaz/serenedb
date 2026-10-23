@@ -27,11 +27,11 @@
 #include <iresearch/utils/space_filling_curve.hpp>
 #include <pcg_random.hpp>
 
+namespace irs::curve {
 namespace {
 
-using namespace irs::curve;
 using Posting = std::vector<uint32_t>;
-using Dictionary = irs::containers::FlatHashMap<std::string, Posting>;
+using Dictionary = containers::FlatHashMap<std::string, Posting>;
 
 struct Sample {
   std::vector<Point> points;
@@ -47,7 +47,7 @@ struct Sample {
     : options{.dimensions = dimensions,
               .max_cells = budget,
               .hilbert = method == 2,
-              .level_step = DefaultLevelStep(dimensions)},
+              .level_step = DefaultLevelStep(dimensions),},
       constrained{partial ? 1u : dimensions} {
     pcg64 random{1099};
     const auto uniform = [&] { return absl::Uniform<double>(random, 0, 1000); };
@@ -190,3 +190,4 @@ BENCHMARK(CurveRanges)
   ->ArgNames({"d", "correlated", "partial", "budget", "method"});
 
 }  // namespace
+}  // namespace irs::curve
