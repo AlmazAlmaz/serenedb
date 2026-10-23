@@ -12,14 +12,14 @@ INSERT INTO measurements VALUES (1, 5, 10), (2, 50, 100);
 
 statement ok
 CREATE INDEX measurements_xy ON measurements USING inverted(
-  id, (curve(x, y))) INCLUDE (x, y);
+  id, (curve(ROW(x, y)))) INCLUDE (x, y);
 
 statement ok
 VACUUM (REFRESH_TABLE) measurements;
 
 query
 SELECT id FROM measurements_xy
-WHERE curve(x, y) @@ ts_between(ROW(0, 0), ROW(10, 20), true, true);
+WHERE curve(ROW(x, y)) @@ ts_between(ROW(0, 0), ROW(10, 20), true, true);
 ----
 id
 1
@@ -48,14 +48,14 @@ INSERT INTO sensors VALUES (1, 3, 1000.25), (2, 40, 1000.75), (3, 7, 1001.5);
 
 statement ok
 CREATE INDEX sensors_curve ON sensors USING inverted(id,
-  (curve(channel, reading, lower := ROW(0, 1000), upper := ROW(64, 1001)))) INCLUDE (channel, reading);
+  (curve(ROW(channel, reading), lower := ROW(0, 1000), upper := ROW(64, 1001)))) INCLUDE (channel, reading);
 
 statement ok
 VACUUM (REFRESH_TABLE) sensors;
 
 query
 SELECT id FROM sensors_curve
-WHERE curve(channel, reading, lower := ROW(0, 1000), upper := ROW(64, 1001))
+WHERE curve(ROW(channel, reading), lower := ROW(0, 1000), upper := ROW(64, 1001))
   @@ ts_between(ROW(0, 1000), ROW(10, 2000), true, true)
 ORDER BY id;
 ----

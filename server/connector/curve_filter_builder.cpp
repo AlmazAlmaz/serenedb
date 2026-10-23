@@ -373,8 +373,12 @@ bool ClaimCurveMatch(
   const auto include_upper = upper_inclusive->GetValue<bool>();
 
   const auto dimensions = spec->options.dimensions;
-  const auto& coordinates =
-    curve.Cast<duckdb::BoundFunctionExpression>().GetChildren();
+  const auto coordinates = CurveCoordinates(curve);
+  if (coordinates.size() != dimensions) {
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_FEATURE_NOT_SUPPORTED),
+                    ERR_MSG("curve() @@ needs the point written as ROW(...) "
+                            "of its coordinates"));
+  }
   irs::curve::Box box;
   bool empty = false;
   duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> rechecks;
@@ -452,8 +456,10 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
   if (!spec) {
     return false;
   }
-  const auto& coordinates =
-    key.Cast<duckdb::BoundFunctionExpression>().GetChildren();
+  const auto coordinates = CurveCoordinates(key);
+  if (coordinates.size() != spec->options.dimensions) {
+    return false;
+  }
   irs::curve::Box box;
   bool empty = false;
   for (uint32_t axis = 0; axis < spec->options.dimensions; ++axis) {

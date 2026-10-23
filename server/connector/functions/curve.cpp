@@ -32,7 +32,9 @@ namespace {
 
 duckdb::unique_ptr<duckdb::FunctionData> CurveBind(
   duckdb::BindScalarFunctionInput& input) {
-  return BindCurveSpec(input.GetClientContext(), input.GetArguments());
+  return BindCurveSpec(input.GetClientContext(),
+                       input.GetBoundFunction().GetDefinition()->GetSignature(),
+                       input.GetArguments());
 }
 
 void CurveFunction(duckdb::DataChunk& args, duckdb::ExpressionState& state,
@@ -50,7 +52,7 @@ void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
     duckdb::Identifier{kCurveFunction}, duckdb::vector<duckdb::LogicalType>{},
     duckdb::LogicalType::BLOB, CurveFunction, CurveBind};
   function.GetSignature()
-    .AddArgs("coordinates", duckdb::LogicalType::ANY)
+    .AddPositionalOnly("point", duckdb::LogicalType::ANY)
     .AddKeywordOnly("kind", duckdb::LogicalType::VARCHAR,
                     duckdb::Value{"morton"})
     .AddKeywordOnly("max_level", duckdb::LogicalType::INTEGER,
