@@ -230,16 +230,46 @@ SELECT curve(ROW(1));
 db error: ERROR: curve(): takes 2 to 8 coordinates, got 1
 
 
-statement error
+statement error No function matches the given name and argument types 'curve\(INTEGER_LITERAL\)'
 SELECT curve(1);
+
+
+statement error No function matches the given name and argument types 'curve\(STRING_LITERAL\)'
+SELECT curve('1, 2');
+
+
+statement error No function matches the given name and argument types 'curve\(INTEGER\[\]\)'
+SELECT curve([1, 2]);
+
+
+statement error
+SELECT curve(NULL);
 ----
-db error: ERROR: curve(): the point must be a ROW of 2 to 8 coordinates, got INTEGER
+db error: ERROR: curve(): the point must be a ROW of 2 to 8 coordinates, got "NULL"
 
 
 statement error
 SELECT curve('10.0.0.1'::INET);
 ----
 db error: ERROR: curve(): the point must be a ROW of 2 to 8 coordinates, got INET
+
+
+statement error
+SELECT curve(ROW(1.5, 2));
+----
+db error: ERROR: curve(): coordinate 1 must be an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET, got DECIMAL(2,1)
+
+
+statement error
+SELECT curve(ROW([1], 2));
+----
+db error: ERROR: curve(): coordinate 1 must be an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET, got INTEGER[]
+
+
+statement error
+SELECT curve(ROW(ROW(1, 2), 3));
+----
+db error: ERROR: curve(): coordinate 1 must be an integer, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ or INET, got TUPLE(INTEGER, INTEGER)
 
 
 statement error No function matches the given name and argument types 'curve\(INTEGER_LITERAL, INTEGER_LITERAL\)'
@@ -361,7 +391,7 @@ SELECT curve(ROW(x, y), max_cells := id) FROM curve_points;
 db error: ERROR: curve(): option "max_cells" must be a constant
 
 
-statement error curve\(point ANY, /, \*, kind VARCHAR := morton, max_level INTEGER := NULL, level_step INTEGER := NULL, max_cells INTEGER := NULL, lower ANY := NULL, upper ANY := NULL\) -> BLOB
+statement error curve\(point STRUCT, /, \*, kind VARCHAR := morton, max_level INTEGER := NULL, level_step INTEGER := NULL, max_cells INTEGER := NULL, lower ANY := NULL, upper ANY := NULL\) -> BLOB
 SELECT curve(ROW(1, 2), level := 3);
 
 
