@@ -31,9 +31,10 @@
 #include <limits>
 #include <queue>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "iresearch/utils/pg/sql_exception_macro.hpp"
 
 #if defined(__BMI2__)
 #include <immintrin.h>
@@ -78,9 +79,10 @@ inline void Validate(const Options& options) {
       options.max_level > kMaxLevel || options.max_cells == 0 ||
       options.max_cells > kMaxCells || options.level_step == 0 ||
       options.level_step > MaxLevelStep(options.dimensions)) {
-    throw std::invalid_argument(
-      "curve: dimensions must be 2..8, max_level 0..64, max_cells 1..4096, "
-      "level_step 1..1+12/dimensions");
+    THROW_SQL_ERROR(
+      ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+      ERR_MSG("curve: dimensions must be 2..8, max_level 0..64, max_cells "
+              "1..4096, level_step 1..1+12/dimensions"));
   }
 }
 
@@ -362,7 +364,8 @@ inline Code Encode(Point point, uint32_t dimensions, bool hilbert) {
     case 8:
       return detail::Encode<8>(point, hilbert);
     default:
-      throw std::invalid_argument("curve dimensions must be 2..8");
+      THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                      ERR_MSG("curve: dimensions must be 2..8"));
   }
 }
 

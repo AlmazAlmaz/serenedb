@@ -30,7 +30,8 @@ namespace {
 
 Code ReferenceEncode(Point point, uint32_t dimensions, bool hilbert) {
   if (dimensions < 2 || dimensions > kMaxDimensions) {
-    throw std::invalid_argument("curve dimensions must be 2..8");
+    THROW_SQL_ERROR(ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
+                    ERR_MSG("curve: dimensions must be 2..8"));
   }
   if (hilbert) {
     for (uint64_t q = uint64_t{1} << 63; q > 1; q >>= 1) {
@@ -468,16 +469,16 @@ TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   for (uint32_t dimensions :
        {uint32_t{0}, uint32_t{1}, uint32_t{9}, UINT32_MAX}) {
     for (bool hilbert : {false, true}) {
-      EXPECT_THROW(Encode({}, dimensions, hilbert), std::invalid_argument);
+      EXPECT_THROW(Encode({}, dimensions, hilbert), irs::SqlException);
     }
   }
-  EXPECT_THROW(CoverBox({}, Options{.dimensions = 1}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.dimensions = 9}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.max_level = 65}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.max_cells = 0}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.max_cells = 4097}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.level_step = 0}), std::invalid_argument);
-  EXPECT_THROW(CoverBox({}, Options{.level_step = 8}), std::invalid_argument);
+  EXPECT_THROW(CoverBox({}, Options{.dimensions = 1}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.dimensions = 9}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.max_level = 65}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.max_cells = 0}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.max_cells = 4097}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.level_step = 0}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.level_step = 8}), irs::SqlException);
   EXPECT_TRUE(CoverBox(Box{{1, 0}, {0, 1}}, Options{}).empty());
   const auto full = CoverBox(Box{{0, 0}, {UINT64_MAX, UINT64_MAX}}, Options{});
   ASSERT_EQ(full.size(), 1);
