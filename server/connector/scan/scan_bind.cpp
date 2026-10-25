@@ -215,7 +215,7 @@ float AutoRescoreWidth(irs::VectorQuantization quant, uint32_t nb_bits,
       return nb_bits > 1 ? 3.f : 2.f;
     case irs::VectorQuantization::OSQ:
       if (nb_bits > 2) {
-        return 6.f;
+        return 7.f;
       }
       return ivf ? 3.f : 2.f;
     case irs::VectorQuantization::TQ:
@@ -225,7 +225,7 @@ float AutoRescoreWidth(irs::VectorQuantization quant, uint32_t nb_bits,
     case irs::VectorQuantization::USQ8:
       return 4.f;
     case irs::VectorQuantization::PQ:
-      return ivf ? 2.f : 4.f;
+      return ivf ? 2.f : 3.f;
     case irs::VectorQuantization::SQ4:
       return 5.f;
     case irs::VectorQuantization::USQ4:
