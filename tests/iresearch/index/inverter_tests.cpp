@@ -1415,7 +1415,7 @@ irs::containers::FlatHashMap<doc_id_t, absl::btree_set<std::string>> TermsByDoc(
                            value.size()};
     auto docs = ::tests::Docs(terms->postings(IndexFeatures::None));
     for (auto doc = docs->Next(); !doc_limits::eof(doc); doc = docs->Next()) {
-      result[doc].insert(term);
+      result[doc].emplace(term);
     }
   }
   return result;
@@ -1433,7 +1433,7 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
   std::vector<std::vector<std::string>> points;
   for (uint32_t i = 0; i < 400; ++i) {
     if (i % 13 == 1) {
-      points.push_back(points.back());
+      points.emplace_back(points.back());
       continue;
     }
     curve::Point point;
@@ -1460,7 +1460,7 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
     for (const auto& terms : points) {
       auto doc = trx.Insert();
       const auto d = doc.DocId();
-      ids.push_back(d);
+      ids.emplace_back(d);
       for (const auto field : {kCurve, kPlain}) {
         ASSERT_TRUE(
           doc.WithField(field, IndexFeatures::None, [&](FieldInverter& fld) {
@@ -1499,7 +1499,7 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
         auto leaf = expected.back();
         leaf[2] = expected[level][2];
         expected.resize(level);
-        expected.push_back(std::move(leaf));
+        expected.emplace_back(std::move(leaf));
         ++trimmed;
         break;
       }
@@ -1514,15 +1514,16 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
 
 TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
   constexpr field_id kCurve = 1;
-  for (const auto& options :
-       {curve::Options{.dimensions = 3, .max_cells = 64, .level_step = 2},
-        curve::Options{
-          .dimensions = 3,
-          .max_level = 48,
-          .max_cells = 512,
-          .hilbert = true,
-          .level_step = 5,
-        }}) {
+  for (const auto& options : {
+         curve::Options{.dimensions = 3, .max_cells = 64, .level_step = 2},
+         curve::Options{
+           .dimensions = 3,
+           .max_level = 48,
+           .max_cells = 512,
+           .hilbert = true,
+           .level_step = 5,
+         },
+       }) {
     SCOPED_TRACE(options.level_step);
     pcg64 random{1317};
     std::vector<curve::Point> points;
@@ -1535,7 +1536,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
                         ? random()
                         : (uint64_t{1} << 63) + (random() >> (20 + i % 30));
       }
-      points.push_back(point);
+      points.emplace_back(point);
       auto& own = terms.emplace_back();
       curve::PointTerms(point, options, [&](std::span<const uint8_t> term) {
         own.emplace_back(term.begin(), term.end());
@@ -1553,7 +1554,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
       for (const auto& own : terms) {
         auto doc = trx.Insert();
         const auto d = doc.DocId();
-        ids.push_back(d);
+        ids.emplace_back(d);
         ASSERT_TRUE(
           doc.WithField(kCurve, IndexFeatures::None, [&](FieldInverter& fld) {
             return fld.InvertKeywords([&](auto&& emit) {
@@ -1589,7 +1590,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
             auto leaf = expected.back();
             leaf[2] = expected[level][2];
             expected.resize(level);
-            expected.push_back(std::move(leaf));
+            expected.emplace_back(std::move(leaf));
             break;
           }
         }
@@ -1615,7 +1616,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
         if (absl::c_any_of(terms[i], [&](const std::string& term) {
               return absl::c_binary_search(query.terms, term);
             })) {
-          expected.insert(ids[i]);
+          expected.emplace(ids[i]);
         }
       }
       const auto make_leaves = [&] {
@@ -1668,7 +1669,7 @@ TEST(InverterEndToEndTest, TrimmedCurveFieldFindsWhatEveryLevelFinds) {
         absl::btree_set<doc_id_t> actual;
         for (auto doc = docs->Next(); !doc_limits::eof(doc);
              doc = docs->Next()) {
-          actual.insert(doc);
+          actual.emplace(doc);
         }
         EXPECT_EQ(expected, actual);
       }

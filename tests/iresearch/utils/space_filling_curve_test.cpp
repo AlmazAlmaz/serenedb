@@ -164,7 +164,7 @@ std::vector<std::vector<std::string>> TrimmedSegment(
   std::vector<std::vector<std::string>> terms;
   containers::FlatHashMap<std::string, size_t> docs;
   for (const auto& point : points) {
-    terms.push_back(IndexedPoint(point, options));
+    terms.emplace_back(IndexedPoint(point, options));
     for (const auto& term : terms.back()) {
       ++docs[term];
     }
@@ -175,7 +175,7 @@ std::vector<std::vector<std::string>> TrimmedSegment(
         auto leaf = own.back();
         leaf[2] = own[i][2];
         own.resize(i);
-        own.push_back(std::move(leaf));
+        own.emplace_back(std::move(leaf));
         break;
       }
     }
@@ -510,8 +510,11 @@ TEST(SpaceFillingCurve, TrimmedSegmentsMatchLikeEveryLevel) {
   pcg64 random{1317};
   for (uint32_t dimensions : {2, 3, 5}) {
     for (bool hilbert : {false, true}) {
-      for (uint32_t step : {uint32_t{1}, DefaultLevelStep(dimensions),
-                            MaxLevelStep(dimensions)}) {
+      for (uint32_t step : {
+             uint32_t{1},
+             DefaultLevelStep(dimensions),
+             MaxLevelStep(dimensions),
+           }) {
         const Options options{
           .dimensions = dimensions,
           .max_cells = 16,
@@ -527,14 +530,14 @@ TEST(SpaceFillingCurve, TrimmedSegmentsMatchLikeEveryLevel) {
                             ? random()
                             : (uint64_t{1} << 63) + (random() >> (36 + i % 24));
           }
-          points.push_back(point);
+          points.emplace_back(point);
           if (i % 17 == 0) {
-            points.push_back(point);
+            points.emplace_back(point);
           }
         }
         std::vector<std::vector<std::string>> full;
         for (const auto& point : points) {
-          full.push_back(IndexedPoint(point, options));
+          full.emplace_back(IndexedPoint(point, options));
         }
         for (size_t segments : {1, 7}) {
           SCOPED_TRACE(segments);
@@ -542,7 +545,7 @@ TEST(SpaceFillingCurve, TrimmedSegmentsMatchLikeEveryLevel) {
           for (size_t segment = 0; segment < segments; ++segment) {
             std::vector<Point> own;
             for (size_t i = segment; i < points.size(); i += segments) {
-              own.push_back(points[i]);
+              own.emplace_back(points[i]);
             }
             auto trimmed = TrimmedSegment(own, options);
             for (size_t i = segment, j = 0; i < points.size();

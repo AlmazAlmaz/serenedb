@@ -518,17 +518,20 @@ inline PointQuery PointQueryTerms(std::span<const Cell> cells, const Box& box,
     terms.emplace_back(
       Term(code, options.dimensions, cell.level,
            cell.level == options.max_level ? kLeafTerm : kAncestorTerm));
-    spans.push_back({detail::CodeBound(code, options, cell.level, 0),
-                     detail::CodeBound(code, options, cell.level, 0xff)});
+    spans.emplace_back(detail::CodeBound(code, options, cell.level, 0),
+                       detail::CodeBound(code, options, cell.level, 0xff));
   };
   const auto leaves = [&](uint32_t level) {
     detail::Coalesce(spans);
     for (uint32_t leaf = 0; leaf <= level && leaf < options.max_level;
          leaf += options.level_step) {
-      const std::string header{kLeafTerm, static_cast<char>(options.dimensions),
-                               static_cast<char>(leaf)};
+      const std::string header{
+        kLeafTerm,
+        static_cast<char>(options.dimensions),
+        static_cast<char>(leaf),
+      };
       for (const auto& span : spans) {
-        query.leaves.push_back({header + span.min, header + span.max});
+        query.leaves.emplace_back(header + span.min, header + span.max);
       }
     }
     spans.clear();

@@ -144,15 +144,15 @@ void CurveTermReader::Reset(const ScatteredField& scattered) {
         continue;
       }
       if (lone != kNoLevel && term[0] == kLeaf) {
-        _moved.push_back({static_cast<uint32_t>(rank),
-                          static_cast<uint32_t>(_renamed.size())});
+        _moved.emplace_back(static_cast<uint32_t>(rank),
+                            static_cast<uint32_t>(_renamed.size()));
         _renamed.insert(_renamed.end(), term.begin(), term.end());
         _renamed[_moved.back().renamed + kLevelByte] = lone;
         continue;
       }
     }
-    _kept.push_back(
-      {static_cast<uint32_t>(rank), CurveTermIterator::kOriginal});
+    _kept.emplace_back(static_cast<uint32_t>(rank),
+                       CurveTermIterator::kOriginal);
   }
 
   absl::c_stable_sort(_moved, [&](const auto& lhs, const auto& rhs) {
