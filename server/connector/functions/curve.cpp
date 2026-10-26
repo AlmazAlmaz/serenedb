@@ -36,7 +36,10 @@ duckdb::unique_ptr<duckdb::FunctionData> CurveBind(
   auto& args = input.GetArguments();
   auto spec = BindCurveSpec(input.GetClientContext(),
                             function.GetDefinition()->GetSignature(), args);
-  function.GetArguments()[0] = args[0]->GetReturnType();
+  auto& types = function.GetArguments();
+  for (size_t i = 0; i < args.size(); ++i) {
+    types[i] = args[i]->GetReturnType();
+  }
   return spec;
 }
 
@@ -64,8 +67,8 @@ void RegisterCurveFunctions(duckdb::ExtensionLoader& loader) {
                     duckdb::Value{duckdb::LogicalType::INTEGER})
     .AddKeywordOnly("max_cells", duckdb::LogicalType::INTEGER,
                     duckdb::Value{duckdb::LogicalType::INTEGER})
-    .AddKeywordOnly("lower", duckdb::LogicalType::ANY, duckdb::Value{})
-    .AddKeywordOnly("upper", duckdb::LogicalType::ANY, duckdb::Value{});
+    .AddKeywordOnly("lower", duckdb::LogicalTypeId::STRUCT, duckdb::Value{})
+    .AddKeywordOnly("upper", duckdb::LogicalTypeId::STRUCT, duckdb::Value{});
   function.SetNullHandling(duckdb::FunctionNullHandling::SPECIAL_HANDLING);
   loader.RegisterFunction(function);
 }

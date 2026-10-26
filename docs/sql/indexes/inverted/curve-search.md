@@ -27,7 +27,7 @@ unknown or repeated name is an error:
 | `max_level` | the most bits a coordinate needs | 0 through 64 coordinate bits used for cells, see [Choosing a depth](#choosing-a-depth). Smaller values reduce depth and precision. Level 0 is the whole domain. |
 | `level_step` | `1 + 4 / dimensions` | 1 through `1 + 12 / dimensions`. An index writes a point at every `level_step`-th level and at `max_level`. |
 | `max_cells` | `min(64, 4 * 2^dimensions)` | 1 through 4096 covering cells per query of an index on this call, see [Coverings](#coverings). |
-| `lower`, `upper` | NULL | `ROW(...)`s with one value per coordinate that normalize the axes, see [below](#axis-normalization). |
+| `lower`, `upper` | NULL | `ROW(...)`s or STRUCTs with one value per coordinate that normalize the axes, see [below](#axis-normalization). |
 
 Coordinates can be signed integers through BIGINT, unsigned integers through
 UBIGINT, FLOAT, DOUBLE, DATE, TIMESTAMP, TIMESTAMPTZ and INET, and can be
@@ -49,10 +49,10 @@ The left side must be the indexed call itself: the same coordinates and the
 same options. The indexed point must be written as `ROW(...)` or a struct
 literal of the coordinates, which the exact check compares; a call on a STRUCT
 column can be indexed but not searched. `lower` and `upper` are `ROW(...)`s
-with one bound per
-coordinate. A NULL component, or a NULL `ROW`, leaves that side of that
-coordinate open, and an inverted interval matches nothing. The inclusivity
-flags apply to every coordinate; for mixed endpoints, write ordinary ranges.
+with one bound per coordinate. A NULL component, or a NULL `ROW`, leaves that
+side of that coordinate open, and an inverted interval matches nothing. The
+inclusivity flags apply to every coordinate; for mixed endpoints, write
+ordinary ranges.
 The condition holds when every coordinate is within its bounds, so a row with
 a NULL coordinate never matches, as its `curve(ROW(...))` value is NULL.
 

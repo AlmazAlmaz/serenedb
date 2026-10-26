@@ -100,6 +100,34 @@ SELECT curve(ROW(1, 2), lower := ROW(0, 0, 0), upper := ROW(10, 10, 10));
 db error: ERROR: curve(): option "lower" must be a ROW of 2 values, got TUPLE(INTEGER, INTEGER, INTEGER)
 
 
+statement error No function matches the given name and argument types 'curve\(TUPLE\(INTEGER, INTEGER\), "lower" := INTEGER_LITERAL, "upper" := TUPLE\(INTEGER, INTEGER\)\)'
+SELECT curve(ROW(1, 2), lower := 5, upper := ROW(10, 10));
+
+
+statement error No function matches the given name and argument types 'curve\(TUPLE\(INTEGER, INTEGER\), "lower" := INTEGER\[\], "upper" := TUPLE\(INTEGER, INTEGER\)\)'
+SELECT curve(ROW(1, 2), lower := [0, 0], upper := ROW(10, 10));
+
+
+statement error
+SELECT curve(ROW(1, 2), lower := ROW(0, 0), upper := '10.0.0.1'::INET);
+----
+db error: ERROR: curve(): option "upper" must be a ROW of 2 values, got INET
+
+
+query
+SELECT curve(ROW(1, 2), lower := NULL, upper := NULL) = curve(ROW(1, 2)) AS same;
+----
+same
+t
+
+
+query
+SELECT curve(ROW(1, 2), lower := {'a': 0, 'b': 0}, upper := {'a': 10, 'b': 10}) = curve(ROW(1, 2), lower := ROW(0, 0), upper := ROW(10, 10)) AS same;
+----
+same
+t
+
+
 statement error
 SELECT curve(ROW(1, DATE '2026-01-01'), lower := ROW(0, 0), upper := ROW(10, 10));
 ----
