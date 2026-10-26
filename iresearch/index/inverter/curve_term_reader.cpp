@@ -146,7 +146,7 @@ void CurveTermReader::Split(const Group& group, uint32_t bits) {
     }
     const auto count = _before[rank] - _before[begin];
     if (count >= 2) {
-      _next_groups.push_back({begin, rank, 0, count});
+      _next_groups.emplace_back(begin, rank, 0, count);
     }
     begin = rank;
   }
@@ -161,7 +161,7 @@ void CurveTermReader::Split(const Group& group, uint32_t bits) {
   _fill.clear();
   for (auto i = first; i < last; ++i) {
     _next_groups[i].docs = static_cast<uint32_t>(_docs.size());
-    _fill.push_back(_next_groups[i].docs);
+    _fill.emplace_back(_next_groups[i].docs);
     _docs.resize(_docs.size() + _next_groups[i].count);
   }
   const auto children = std::span{_next_groups}.subspan(first, last - first);
@@ -211,10 +211,10 @@ void CurveTermReader::Reset(const ScatteredField& scattered,
   _docs.clear();
   _groups.clear();
   if (docs >= 2) {
-    _groups.push_back({0, count, 0, docs});
+    _groups.emplace_back(0, count, 0, docs);
     for (doc_id_t doc = 0; doc < _rank_of.size(); ++doc) {
       if (_rank_of[doc] != kNoRank) {
-        _docs.push_back(doc);
+        _docs.emplace_back(doc);
       }
     }
   }
@@ -225,15 +225,15 @@ void CurveTermReader::Reset(const ScatteredField& scattered,
     for (const auto& group : _groups) {
       const auto code = AsBytesView(scattered.TermAt(group.begin));
       const auto term = static_cast<uint32_t>(_bytes.size());
-      _bytes.push_back(kAncestor);
-      _bytes.push_back(static_cast<byte_type>(dimensions));
-      _bytes.push_back(static_cast<byte_type>(level));
+      _bytes.emplace_back(kAncestor);
+      _bytes.emplace_back(static_cast<byte_type>(dimensions));
+      _bytes.emplace_back(static_cast<byte_type>(level));
       _bytes.insert(_bytes.end(), code.begin() + curve::kTermHeader,
                     code.begin() + size);
       if (level_bits % 8) {
         _bytes.back() &= static_cast<byte_type>(0xff << (8 - level_bits % 8));
       }
-      _generated.push_back({term, size, group.docs, group.count});
+      _generated.emplace_back(term, size, group.docs, group.count);
     }
     const auto next = level + options.level_step;
     if (next >= options.max_level) {
@@ -250,7 +250,7 @@ void CurveTermReader::Reset(const ScatteredField& scattered,
   _order.clear();
   for (uint32_t rank = 0; rank < count; ++rank) {
     if (_before[rank + 1] - _before[rank] != 1) {
-      _order.push_back({rank, CurveTermIterator::kOriginal});
+      _order.emplace_back(rank, CurveTermIterator::kOriginal);
       continue;
     }
     int32_t shared = -1;
@@ -265,11 +265,11 @@ void CurveTermReader::Reset(const ScatteredField& scattered,
     const auto lone = (alone + options.level_step - 1) / options.level_step *
                       options.level_step;
     if (lone >= options.max_level) {
-      _order.push_back({rank, CurveTermIterator::kOriginal});
+      _order.emplace_back(rank, CurveTermIterator::kOriginal);
       continue;
     }
     const auto term = AsBytesView(scattered.TermAt(rank));
-    _moved.push_back({rank, static_cast<uint32_t>(_bytes.size())});
+    _moved.emplace_back(rank, static_cast<uint32_t>(_bytes.size()));
     _bytes.insert(_bytes.end(), term.begin(), term.end());
     _bytes[_moved.back().renamed + kLevelByte] = static_cast<byte_type>(lone);
   }

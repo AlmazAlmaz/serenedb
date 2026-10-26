@@ -1511,7 +1511,7 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
   std::vector<std::vector<std::string>> points;
   for (uint32_t i = 0; i < 400; ++i) {
     if (i % 13 == 1) {
-      points.push_back(points.back());
+      points.emplace_back(points.back());
       continue;
     }
     curve::Point point;
@@ -1521,7 +1521,7 @@ TEST(InverterEndToEndTest, CurveTermsStopWhereThePointIsAlone) {
                       ? random()
                       : (uint64_t{1} << 63) + (random() >> (30 + i % 20));
     }
-    points.push_back(CurvePointTerms(point, options));
+    points.emplace_back(CurvePointTerms(point, options));
   }
   size_t trimmed = 0;
   CheckCurveTerms(points, options, trimmed);
@@ -1538,22 +1538,25 @@ TEST(InverterEndToEndTest, CurveTermsOfSmallSegments) {
   b[1] += 1;
   auto c = a;
   c[0] = 7;
-  for (const auto& options :
-       {curve::Options{.dimensions = 2, .max_level = 32, .level_step = 2},
-        curve::Options{.dimensions = 3, .level_step = 2},
-        curve::Options{.dimensions = 3, .max_level = 7, .level_step = 3},
-        curve::Options{.dimensions = 2, .max_level = 0}}) {
+  for (const auto& options : {
+         curve::Options{.dimensions = 2, .max_level = 32, .level_step = 2},
+         curve::Options{.dimensions = 3, .level_step = 2},
+         curve::Options{.dimensions = 3, .max_level = 7, .level_step = 3},
+         curve::Options{.dimensions = 2, .max_level = 0},
+       }) {
     SCOPED_TRACE(options.max_level);
     const auto ta = CurvePointTerms(a, options);
     const auto tb = CurvePointTerms(b, options);
     const auto tc = CurvePointTerms(c, options);
     for (const auto& points :
-         std::vector<std::vector<std::vector<std::string>>>{{ta},
-                                                            {ta, ta},
-                                                            {ta, tb},
-                                                            {ta, tb, tc},
-                                                            {ta, ta, tc},
-                                                            {tc, ta, tb, ta}}) {
+         std::vector<std::vector<std::vector<std::string>>>{
+           {ta},
+           {ta, ta},
+           {ta, tb},
+           {ta, tb, tc},
+           {ta, ta, tc},
+           {tc, ta, tb, ta},
+         }) {
       SCOPED_TRACE(points.size());
       size_t trimmed = 0;
       CheckCurveTerms(points, options, trimmed);
