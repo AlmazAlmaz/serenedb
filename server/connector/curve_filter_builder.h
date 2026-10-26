@@ -51,4 +51,10 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
                              const SearchColumnInfo& info,
                              duckdb::ClientContext& context);
 
+bool AddCartesianCandidates(irs::BooleanFilter& root,
+                            const duckdb::Expression& expression,
+                            const ColumnGetter& columns,
+                            const ExpressionGetter& expressions,
+                            duckdb::ClientContext& context);
+
 }  // namespace sdb::connector

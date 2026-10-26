@@ -20,6 +20,8 @@
 
 #include "connector/curve_filter_builder.h"
 
+#include <absl/algorithm/container.h>
+
 #include <duckdb/execution/expression_executor.hpp>
 #include <duckdb/planner/expression/bound_between_expression.hpp>
 #include <duckdb/planner/expression/bound_cast_expression.hpp>
@@ -36,6 +38,7 @@
 #include "connector/curve_index.h"
 #include "connector/functions/search.h"
 #include "connector/functions/ts_query_codec.h"
+#include "connector/geo_validate.h"
 #include "connector/pg_logical_types.h"
 
 namespace sdb::connector {
@@ -47,7 +50,9 @@ const duckdb::Expression& PeelCast(const duckdb::Expression& expr) {
   if (duckdb::BoundCastExpression::IsCast(expr)) {
     const auto& child = duckdb::BoundCastExpression::Child(
       expr.Cast<duckdb::BoundFunctionExpression>());
-    if (child.GetReturnType() == expr.GetReturnType()) {
+    if (child.GetReturnType() == expr.GetReturnType() ||
+        (child.GetReturnType().id() == duckdb::LogicalTypeId::GEOMETRY &&
+         expr.GetReturnType().id() == duckdb::LogicalTypeId::GEOMETRY)) {
       return PeelCast(child);
     }
   }
@@ -129,6 +134,19 @@ std::optional<duckdb::Value> Fold(duckdb::ClientContext& context,
   return value;
 }
 
+void AddTermCandidates(irs::BooleanFilter& root, irs::field_id field_id,
+                       std::span<const std::string> terms) {
+  auto candidates = std::make_unique<irs::BooleanFilter>();
+  candidates->SetScorer(&irs::ForceConstScore());
+  for (const auto& term : terms) {
+    AddTerm({candidates.get(), irs::Occur::Should}, field_id,
+            irs::ViewCast<irs::byte_type>(std::string_view{term}),
+            irs::kNoBoost, &irs::ForceConstScore());
+  }
+  SetMinMatch(*candidates, 1);
+  root.Add(std::move(candidates), irs::Occur::Must);
+}
+
 void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
                       const irs::curve::Box& box) {
   const auto& options =
@@ -138,16 +156,8 @@ void AddBoxCandidates(irs::BooleanFilter& root, const SearchColumnInfo& info,
     root.Add(std::make_unique<irs::Empty>(), irs::Occur::Must);
     return;
   }
-  auto terms = irs::curve::PointQueryTerms(cells, box, options);
-  auto candidates = std::make_unique<irs::BooleanFilter>();
-  candidates->SetScorer(&irs::ForceConstScore());
-  for (const auto& term : terms) {
-    AddTerm({candidates.get(), irs::Occur::Should}, info.field_id,
-            irs::ViewCast<irs::byte_type>(std::string_view{term}),
-            irs::kNoBoost, &irs::ForceConstScore());
-  }
-  SetMinMatch(*candidates, 1);
-  root.Add(std::move(candidates), irs::Occur::Must);
+  AddTermCandidates(root, info.field_id,
+                    irs::curve::PointQueryTerms(cells, box, options));
 }
 
 void RaiseMin(uint64_t& min, CurveKey bound, bool inclusive, bool& empty) {
@@ -515,6 +525,74 @@ bool AddCurveRangeCandidates(irs::BooleanFilter& root,
     return true;
   }
   AddBoxCandidates(root, info, box);
+  return true;
+}
+
+bool AddCartesianCandidates(irs::BooleanFilter& root,
+                            const duckdb::Expression& expression,
+                            const ColumnGetter& columns,
+                            const ExpressionGetter& expressions,
+                            duckdb::ClientContext& context) {
+  constexpr std::array<std::string_view, 8> kPredicates{
+    "ST_Intersects", "ST_Contains", "ST_Within",  "ST_Covers",
+    "ST_CoveredBy",  "ST_Touches",  "ST_Crosses", "ST_Overlaps",
+  };
+  if (expression.GetExpressionClass() !=
+        duckdb::ExpressionClass::BOUND_FUNCTION ||
+      expression.HasParameter()) {
+    return false;
+  }
+  const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
+  const auto& args = function.GetChildren();
+  const auto& name = function.Function().GetName();
+  if (args.size() != 2 ||
+      absl::c_none_of(kPredicates, [&](std::string_view predicate) {
+        return name == predicate;
+      })) {
+    return false;
+  }
+  const auto find =
+    [&](const duckdb::Expression& argument) -> std::optional<SearchColumnInfo> {
+    const auto& expr = PeelCast(argument);
+    auto result =
+      expr.GetExpressionClass() == duckdb::ExpressionClass::BOUND_COLUMN_REF
+        ? columns(expr.Cast<duckdb::BoundColumnRefExpression>())
+        : expressions(expr);
+    if (!result || !result->tokenizer.analyzer ||
+        result->tokenizer.analyzer->type() != irs::Type<CurveTokenizer>::id() ||
+        !irs::utils::downCast<CurveTokenizer>(*result->tokenizer.analyzer)
+           .Options()
+           .cartesian) {
+      return std::nullopt;
+    }
+    return result;
+  };
+  size_t field = 0;
+  auto info = find(*args[field]);
+  if (!info) {
+    field = 1;
+    info = find(*args[field]);
+  }
+  if (!info) {
+    return false;
+  }
+  const auto shape = Fold(context, *args[1 - field]);
+  if (!shape || shape->IsNull() ||
+      shape->type().id() != duckdb::LogicalTypeId::GEOMETRY) {
+    return false;
+  }
+  ValidateGeometryCartesian(info->logical_type, "Cartesian index");
+  if (duckdb::GeoType::HasCRS(shape->type())) {
+    ValidateGeometryCartesian(shape->type(), "Cartesian query");
+  }
+  const auto& options =
+    irs::utils::downCast<CurveTokenizer>(*info->tokenizer.analyzer).Options();
+  const auto cells = CoverCartesian(duckdb::StringValue::Get(*shape), options);
+  if (cells.empty()) {
+    return false;
+  }
+  AddTermCandidates(root, info->field_id,
+                    irs::curve::Terms(cells, options, true));
   return true;
 }
 
