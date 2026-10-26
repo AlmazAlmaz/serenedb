@@ -110,6 +110,9 @@ TEST(SerializerBinary, CurveOptions) {
     .max_cells = 128,
     .hilbert = true,
   });
+  RoundTrip(irs::curve::Options{.max_cells = 1, .cartesian = true});
+  RoundTrip(
+    irs::curve::Options{.max_cells = 256, .cartesian = true, .shape_cells = 4});
   RoundTrip(irs::curve::Options{.dimensions = 3, .level_step = 3});
   RoundTrip(std::optional<irs::curve::Options>{});
   RoundTrip(std::optional{irs::curve::Options{

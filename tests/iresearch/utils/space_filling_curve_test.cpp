@@ -457,6 +457,24 @@ TEST(SpaceFillingCurve, LevelStepNarrowsPointCandidates) {
   }
 }
 
+TEST(SpaceFillingCurve, CoarseIndexedCellsAndBoundaryQueries) {
+  for (bool hilbert : {false, true}) {
+    const Options options{.max_cells = 1, .hilbert = hilbert};
+    const Box indexed{
+      .min = {EncodeDouble(-100), EncodeDouble(-0.001)},
+      .max = {EncodeDouble(100), EncodeDouble(0.001)},
+    };
+    const auto terms = Terms(CoverBox(indexed, options), options, false);
+    for (double x : {-100.0, 0.0, 100.0}) {
+      const Box query{
+        .min = {EncodeDouble(x), EncodeDouble(0)},
+        .max = {EncodeDouble(x), EncodeDouble(0)},
+      };
+      EXPECT_TRUE(Match(terms, Terms(CoverBox(query, options), options, true)));
+    }
+  }
+}
+
 TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
   for (uint32_t level : {0, 1, 32, 63, 64}) {
     for (bool hilbert : {false, true}) {
@@ -477,6 +495,85 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
   }
 }
 
+TEST(SpaceFillingCurve, PointTermsMatchCellTerms) {
+  pcg64 random{1137};
+  for (uint32_t dimensions : {2, 3, 8}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t level : {0, 1, 17, 64}) {
+        const Options options{
+          .dimensions = dimensions,
+          .max_level = level,
+          .hilbert = hilbert,
+        };
+        Point point;
+        point.fill(0);
+        for (uint32_t axis = 0; axis < dimensions; ++axis) {
+          point[axis] = random();
+        }
+        std::vector<std::string> emitted;
+        PointTerms(point, options, [&](std::span<const uint8_t> term) {
+          emitted.emplace_back(term.begin(), term.end());
+        });
+        absl::c_sort(emitted);
+        const Cell cell{point, level};
+        EXPECT_EQ(emitted, Terms(std::span{&cell, 1}, options, false));
+      }
+    }
+  }
+}
+
+std::vector<std::string> AllCellTerms(std::span<const Cell> cells,
+                                      const Options& options, bool query) {
+  std::vector<std::string> terms;
+  for (const auto& cell : cells) {
+    const auto code = Encode(cell.min, options.dimensions, options.hilbert);
+    for (uint32_t level = 0; level <= cell.level; ++level) {
+      terms.emplace_back(
+        Term(code, options.dimensions, level,
+             query || level == cell.level ? kLeafTerm : kAncestorTerm));
+    }
+    if (query) {
+      terms.emplace_back(
+        Term(code, options.dimensions, cell.level, kAncestorTerm));
+    }
+  }
+  absl::c_sort(terms);
+  terms.erase(std::ranges::unique(terms).begin(), terms.end());
+  return terms;
+}
+
+TEST(SpaceFillingCurve, SharedAncestorsAreEmittedOnce) {
+  pcg64 random{631};
+  for (uint32_t dimensions : {2, 3}) {
+    for (bool hilbert : {false, true}) {
+      for (uint32_t budget : {4, 64, 256}) {
+        const Options options{
+          .dimensions = dimensions,
+          .max_cells = budget,
+          .hilbert = hilbert,
+        };
+        for (uint32_t trial = 0; trial < 16; ++trial) {
+          Box box;
+          for (uint32_t axis = 0; axis < dimensions; ++axis) {
+            const auto center = random() >> 1;
+            box.min[axis] = center;
+            box.max[axis] = center + (random() >> (4 + random() % 56));
+          }
+          const auto cover = CoverBox(box, options);
+          for (bool query : {false, true}) {
+            size_t emitted = 0;
+            CellTerms(cover, options, query,
+                      [&](std::span<const uint8_t>) { ++emitted; });
+            const auto expected = AllCellTerms(cover, options, query);
+            EXPECT_EQ(Terms(cover, options, query), expected);
+            EXPECT_EQ(emitted, expected.size());
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   for (uint32_t dimensions :
        {uint32_t{0}, uint32_t{1}, uint32_t{9}, UINT32_MAX}) {
@@ -491,6 +588,10 @@ TEST(SpaceFillingCurve, InvalidAndExtremeInputs) {
   EXPECT_THROW(CoverBox({}, Options{.max_cells = 4097}), irs::SqlException);
   EXPECT_THROW(CoverBox({}, Options{.level_step = 0}), irs::SqlException);
   EXPECT_THROW(CoverBox({}, Options{.level_step = 8}), irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.dimensions = 3, .cartesian = true}),
+               irs::SqlException);
+  EXPECT_THROW(CoverBox({}, Options{.level_step = 2, .cartesian = true}),
+               irs::SqlException);
   EXPECT_TRUE(CoverBox(Box{{1, 0}, {0, 1}}, Options{}).empty());
   const auto full = CoverBox(Box{{0, 0}, {UINT64_MAX, UINT64_MAX}}, Options{});
   ASSERT_EQ(full.size(), 1);

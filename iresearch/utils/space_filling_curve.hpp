@@ -58,6 +58,8 @@ struct Options {
   uint32_t max_cells = 64;
   bool hilbert = false;
   uint32_t level_step = 1;
+  bool cartesian = false;
+  uint32_t shape_cells = 16;
 
   bool operator==(const Options&) const = default;
 };
@@ -78,11 +80,15 @@ inline void Validate(const Options& options) {
   if (options.dimensions < 2 || options.dimensions > kMaxDimensions ||
       options.max_level > kMaxLevel || options.max_cells == 0 ||
       options.max_cells > kMaxCells || options.level_step == 0 ||
-      options.level_step > MaxLevelStep(options.dimensions)) {
+      options.level_step > MaxLevelStep(options.dimensions) ||
+      options.shape_cells == 0 || options.shape_cells > kMaxCells ||
+      (options.cartesian &&
+       (options.dimensions != 2 || options.level_step != 1))) {
     THROW_SQL_ERROR(
       ERR_CODE(ERRCODE_INVALID_PARAMETER_VALUE),
-      ERR_MSG("curve: dimensions must be 2..8, max_level 0..64, max_cells "
-              "1..4096, level_step 1..1+12/dimensions"));
+      ERR_MSG("curve: dimensions must be 2..8 (Cartesian: 2), max_level "
+              "0..64, max_cells and shape_cells 1..4096, level_step "
+              "1..1+12/dimensions (Cartesian: 1)"));
   }
 }
 
@@ -169,6 +175,7 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
   struct Pending {
     Cell cell;
     Relation relation;
+    uint32_t context;
     long double priority;
     uint64_t order;
   };
@@ -181,12 +188,13 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
   uint64_t order = 0;
   std::vector<Cell> result;
   const Cell root;
-  const auto root_relation = classify(root);
+  uint32_t root_context = 0;
+  const auto root_relation = classify(root, root_context);
   if (root_relation == Relation::Outside) {
     return result;
   }
-  pending.emplace(root, root_relation, static_cast<long double>(priority(root)),
-                  order++);
+  pending.emplace(root, root_relation, root_context,
+                  static_cast<long double>(priority(root)), order++);
   std::vector<Pending> children;
   while (!pending.empty()) {
     const auto top = pending.top();
@@ -196,9 +204,11 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
       result.emplace_back(cell);
       continue;
     }
+    const auto room = options.max_cells - pending.size() - result.size();
     children.clear();
     const auto bit = uint64_t{1} << (63 - cell.level);
-    for (uint32_t child = 0; child < (uint32_t{1} << options.dimensions);
+    for (uint32_t child = 0;
+         child < (uint32_t{1} << options.dimensions) && children.size() <= room;
          ++child) {
       Cell next{cell.min, cell.level + 1};
       for (uint32_t axis = 0; axis < options.dimensions; ++axis) {
@@ -206,12 +216,13 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
           next.min[axis] |= bit;
         }
       }
-      const auto next_relation = classify(next);
+      auto context = top.context;
+      const auto next_relation = classify(next, context);
       if (next_relation != Relation::Outside) {
-        children.emplace_back(next, next_relation, 0, 0);
+        children.emplace_back(next, next_relation, context, 0, 0);
       }
     }
-    if (children.size() + pending.size() + result.size() > options.max_cells) {
+    if (children.size() > room) {
       result.emplace_back(cell);
       continue;
     }
@@ -231,7 +242,7 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify) {
 }
 
 inline std::vector<Cell> CoverBox(const Box& box, const Options& options) {
-  return Cover(options, [&](const Cell& cell) {
+  return Cover(options, [&](const Cell& cell, uint32_t&) {
     return Classify(cell, box, options.dimensions);
   });
 }
@@ -486,6 +497,69 @@ inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
       }
     }
   }
+  absl::c_sort(terms);
+  terms.erase(std::ranges::unique(terms).begin(), terms.end());
+  return terms;
+}
+
+inline uint32_t CommonPrefixBits(const Code& a, const Code& b) noexcept {
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i] != b[i]) {
+      return static_cast<uint32_t>(
+        i * 8 + std::countl_zero(static_cast<uint8_t>(a[i] ^ b[i])));
+    }
+  }
+  return static_cast<uint32_t>(a.size() * 8);
+}
+
+template<typename Emit>
+void CellTerms(std::span<const Cell> cells, const Options& options, bool query,
+               Emit&& emit) {
+  struct Entry {
+    Code code;
+    uint32_t level;
+  };
+  std::vector<Entry> entries;
+  entries.reserve(cells.size());
+  for (const auto& cell : cells) {
+    entries.emplace_back(Encode(cell.min, options.dimensions, options.hilbert),
+                         cell.level);
+  }
+  absl::c_sort(entries, [](const Entry& lhs, const Entry& rhs) {
+    return lhs.code < rhs.code;
+  });
+  std::array<uint8_t, kTermHeader + sizeof(Code)> term;
+  const auto write = [&](const Entry& entry, uint32_t level, char kind) {
+    emit(std::span<const uint8_t>{
+      term.data(),
+      WriteTerm(term.data(), entry.code, options.dimensions, level, kind)});
+  };
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto& entry = entries[i];
+    uint32_t first = 0;
+    if (i != 0) {
+      const auto& prev = entries[i - 1];
+      const auto shared =
+        CommonPrefixBits(prev.code, entry.code) / options.dimensions;
+      first = query ? std::min(prev.level, shared) + 1
+                    : std::min(prev.level, shared + 1);
+    }
+    for (uint32_t level = first; level < entry.level; ++level) {
+      write(entry, level, query ? kLeafTerm : kAncestorTerm);
+    }
+    if (query && first <= entry.level) {
+      write(entry, entry.level, kLeafTerm);
+    }
+    write(entry, entry.level, query ? kAncestorTerm : kLeafTerm);
+  }
+}
+
+inline std::vector<std::string> Terms(std::span<const Cell> cells,
+                                      const Options& options, bool query) {
+  std::vector<std::string> terms;
+  CellTerms(cells, options, query, [&](std::span<const uint8_t> term) {
+    terms.emplace_back(term.begin(), term.end());
+  });
   absl::c_sort(terms);
   terms.erase(std::ranges::unique(terms).begin(), terms.end());
   return terms;

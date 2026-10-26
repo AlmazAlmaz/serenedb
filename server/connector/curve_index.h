@@ -112,6 +112,9 @@ std::span<const duckdb::unique_ptr<duckdb::Expression>> CurveCoordinates(
 void EncodeCurveCodes(const CurveSpec& spec, duckdb::DataChunk& args,
                       duckdb::Vector& result);
 
+std::vector<irs::curve::Cell> CoverCartesian(
+  std::string_view wkb, const irs::curve::Options& options);
+
 class CurveTokenizer final
   : public irs::analysis::TypedTokenizer<CurveTokenizer> {
  public:
@@ -129,15 +132,23 @@ class CurveTokenizer final
 
   template<irs::TokenLayout Layout>
   bool DoFill(duckdb::string_t value, irs::TokenSink& sink) {
+    const auto emit = [&](std::span<const uint8_t> term) {
+      sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
+    };
+    if (_options.cartesian) {
+      auto shape = _options;
+      shape.max_cells = _options.shape_cells;
+      irs::curve::CellTerms(
+        CoverCartesian({value.GetData(), value.GetSize()}, shape), _options,
+        false, emit);
+      return true;
+    }
     const std::span code{reinterpret_cast<const uint8_t*>(value.GetData()),
                          value.GetSize()};
     if (code.size() !=
         irs::curve::CodeSize(_options.dimensions, _options.max_level)) {
       return false;
     }
-    const auto emit = [&](std::span<const uint8_t> term) {
-      sink.Emit<Layout>(term.data(), static_cast<uint32_t>(term.size()));
-    };
     irs::curve::CodeTerms(code, _options, emit);
     return true;
   }

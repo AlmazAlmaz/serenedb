@@ -15,6 +15,7 @@ target_sources(
         inet_filter_builder.cpp
         inet_terms.cpp
         curve_index.cpp
+        cartesian_covering.cpp
         curve_filter_builder.cpp
         search_filter_printer.cpp
         duckdb_client_state.cpp
@@ -66,6 +67,11 @@ target_sources(
         duckdb_physical_search_truncate.cpp
         highlight/highlight_options.cpp
         highlight/memory_index.cpp
+)
+
+target_include_directories(
+    sereneserver
+    PRIVATE ${CMAKE_SOURCE_DIR}/third_party/duckdb_spatial/src
 )
 
 target_link_libraries(sereneserver PRIVATE simdjson)
