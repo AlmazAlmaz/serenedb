@@ -19,35 +19,34 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <absl/algorithm/container.h>
+#include <absl/random/distributions.h>
 #include <gtest/gtest.h>
 
-#include <random>
+#include <pcg_random.hpp>
 #include <spatial/modules/boost/boost_geometry.hpp>
 
 #include "connector/cartesian_covering.h"
 
+namespace sdb::connector {
 namespace {
 
-using namespace irs::curve;
+namespace curve = irs::curve;
 using duckdb::BoostGeometry;
 using duckdb::BoostLinestring;
 using duckdb::BoostPoint;
 using duckdb::BoostPolygon;
 
-constexpr Options kCartesian{.cartesian = true};
+inline constexpr curve::Options kCartesian{.cartesian = true};
 
 bool Candidate(const BoostGeometry& indexed, const BoostGeometry& query,
-               const Options& options) {
-  const auto left = Terms(
-    sdb::connector::CoverCartesianGeometry(indexed, options), options, false);
-  const auto right = Terms(
-    sdb::connector::CoverCartesianGeometry(query, options), options, true);
-  for (const auto& term : left) {
-    if (std::binary_search(right.begin(), right.end(), term)) {
-      return true;
-    }
-  }
-  return false;
+               const curve::Options& options) {
+  const auto left =
+    curve::Terms(CoverCartesianGeometry(indexed, options), options, false);
+  const auto right =
+    curve::Terms(CoverCartesianGeometry(query, options), options, true);
+  return absl::c_any_of(left, [&](const std::string& term) {
+    return absl::c_binary_search(right, term);
+  });
 }
 
 BoostPolygon Polygon(std::string_view wkt) {
@@ -63,16 +62,18 @@ TEST(CartesianCovering, ThinShapesAndBoundaries) {
     Polygon("POLYGON((0 0,1000 1000,1000 1000.000001,0 0.000001,0 0))")};
   for (bool hilbert : {false, true}) {
     for (uint32_t budget : {1, 4, 64}) {
-      const Options options{
-        .max_cells = budget, .hilbert = hilbert, .cartesian = true};
+      const curve::Options options{
+        .max_cells = budget,
+        .hilbert = hilbert,
+        .cartesian = true,
+      };
       for (double x : {-1e6, 0.0, 1e6}) {
         EXPECT_TRUE(Candidate(line, BoostGeometry{BoostPoint{x, 0}}, options));
       }
       for (double x : {0.0, 500.0, 1000.0}) {
         EXPECT_TRUE(Candidate(thin, BoostGeometry{BoostPoint{x, x}}, options));
       }
-      EXPECT_LE(sdb::connector::CoverCartesianGeometry(thin, options).size(),
-                budget);
+      EXPECT_LE(CoverCartesianGeometry(thin, options).size(), budget);
     }
   }
 }
@@ -86,8 +87,12 @@ TEST(CartesianCovering, HolesAndRecheck) {
   EXPECT_TRUE(Candidate(ring, edge, kCartesian));
   EXPECT_FALSE(
     duckdb::EvalPredicate(duckdb::BoostPredicate::INTERSECTS, ring, hole));
-  EXPECT_TRUE(Candidate(
-    ring, hole, Options{.max_level = 0, .max_cells = 1, .cartesian = true}));
+  EXPECT_TRUE(Candidate(ring, hole,
+                        curve::Options{
+                          .max_level = 0,
+                          .max_cells = 1,
+                          .cartesian = true,
+                        }));
 }
 
 TEST(CartesianCovering, DegenerateInvalidAndHugeShapes) {
@@ -97,20 +102,19 @@ TEST(CartesianCovering, DegenerateInvalidAndHugeShapes) {
     Polygon("POLYGON((-1e200 -1e200,-1e200 1e200,1e200 1e200,1e200 "
             "-1e200,-1e200 -1e200))")};
   for (const auto* geometry : {&degenerate, &crossed, &huge}) {
-    const auto cover =
-      sdb::connector::CoverCartesianGeometry(*geometry, kCartesian);
+    const auto cover = CoverCartesianGeometry(*geometry, kCartesian);
     ASSERT_FALSE(cover.empty());
     EXPECT_TRUE(
       Candidate(*geometry, BoostGeometry{BoostPoint{1, 1}}, kCartesian));
   }
-  EXPECT_TRUE(sdb::connector::CoverCartesianGeometry(
-                BoostGeometry{BoostLinestring{}}, kCartesian)
-                .empty());
+  EXPECT_TRUE(
+    CoverCartesianGeometry(BoostGeometry{BoostLinestring{}}, kCartesian)
+      .empty());
 }
 
 TEST(CartesianCovering, PrunesSeparatedThinShapes) {
   const BoostGeometry diagonal{BoostLinestring{{100, 100}, {200, 200}}};
-  const Options options{.max_cells = 128, .cartesian = true};
+  const curve::Options options{.max_cells = 128, .cartesian = true};
   EXPECT_FALSE(
     Candidate(diagonal, BoostGeometry{BoostPoint{105, 195}}, options));
   EXPECT_TRUE(
@@ -118,13 +122,12 @@ TEST(CartesianCovering, PrunesSeparatedThinShapes) {
 }
 
 TEST(CartesianCovering, DoesNotSpendBudgetOnSubnormalStrips) {
-  const Options options = kCartesian;
   const BoostGeometry query{BoostPoint{512, 512}};
   size_t candidates = 0;
   for (uint32_t id = 0; id < 32; ++id) {
     const auto x = static_cast<double>(id * 32);
     const BoostGeometry line{BoostLinestring{{x, 0}, {x + 1024, 1024}}};
-    const auto candidate = Candidate(line, query, options);
+    const auto candidate = Candidate(line, query, kCartesian);
     if (id == 0) {
       EXPECT_TRUE(candidate);
     }
@@ -136,12 +139,12 @@ TEST(CartesianCovering, DoesNotSpendBudgetOnSubnormalStrips) {
 TEST(CartesianCovering, ManyOverlappingEdgesKeepCandidates) {
   const auto far = 512 + std::ldexp(1.0, -31);
   BoostLinestring line;
-  for (int i = 0; i <= 1200; ++i) {
+  for (uint32_t i = 0; i <= 1200; ++i) {
     line.emplace_back(i % 2 ? far : 512.0, 512.0);
   }
   const BoostGeometry shape{line};
-  const Options options{.max_cells = 128, .cartesian = true};
-  EXPECT_GT(sdb::connector::CoverCartesianGeometry(shape, options).size(), 1);
+  const curve::Options options{.max_cells = 128, .cartesian = true};
+  EXPECT_GT(CoverCartesianGeometry(shape, options).size(), 1);
   for (const double x : {512.0, 512 + std::ldexp(1.0, -33), far}) {
     EXPECT_TRUE(Candidate(shape, BoostGeometry{BoostPoint{x, 512}}, options));
   }
@@ -151,7 +154,7 @@ TEST(CartesianCovering, ManyOverlappingEdgesKeepCandidates) {
 TEST(CartesianCovering, NonfiniteVerticesCoverTheWholeDomain) {
   for (const double bad : {INFINITY, -INFINITY, NAN}) {
     const BoostGeometry line{BoostLinestring{{0, 0}, {1, bad}}};
-    const auto cover = sdb::connector::CoverCartesianGeometry(line, kCartesian);
+    const auto cover = CoverCartesianGeometry(line, kCartesian);
     ASSERT_EQ(cover.size(), 1);
     EXPECT_EQ(cover.front().level, 0);
     EXPECT_TRUE(
@@ -162,19 +165,21 @@ TEST(CartesianCovering, NonfiniteVerticesCoverTheWholeDomain) {
 BoostPolygon Square(const BoostPoint& center, double half, double hole) {
   BoostPolygon square;
   const auto ring = [&](double size) {
-    return std::vector<BoostPoint>{{center.x() - size, center.y() - size},
-                                   {center.x() - size, center.y() + size},
-                                   {center.x() + size, center.y() + size},
-                                   {center.x() + size, center.y() - size},
-                                   {center.x() - size, center.y() - size}};
+    return std::vector<BoostPoint>{
+      {center.x() - size, center.y() - size},
+      {center.x() - size, center.y() + size},
+      {center.x() + size, center.y() + size},
+      {center.x() + size, center.y() - size},
+      {center.x() - size, center.y() - size},
+    };
   };
   for (const auto& vertex : ring(half)) {
-    square.outer().push_back(vertex);
+    square.outer().emplace_back(vertex);
   }
   if (hole > 0) {
-    square.inners().emplace_back();
+    auto& inner = square.inners().emplace_back();
     for (const auto& vertex : ring(half * hole)) {
-      square.inners().back().push_back(vertex);
+      inner.emplace_back(vertex);
     }
   }
   duckdb::bg::correct(square);
@@ -182,15 +187,15 @@ BoostPolygon Square(const BoostPoint& center, double half, double hole) {
 }
 
 TEST(CartesianCovering, RandomShapesHaveNoFalseNegatives) {
-  std::mt19937_64 random{1137};
+  pcg64 random{1137};
   for (const double scale : {1e-3, 1.0, 1e6}) {
-    std::uniform_real_distribution<double> coordinate{-scale, scale};
     const auto point = [&] {
-      return BoostPoint{coordinate(random), coordinate(random)};
+      return BoostPoint{absl::Uniform<double>(random, -scale, scale),
+                        absl::Uniform<double>(random, -scale, scale)};
     };
     std::vector<BoostGeometry> shapes;
     std::vector<BoostGeometry> queries;
-    for (int i = 0; i < 8; ++i) {
+    for (uint32_t i = 0; i < 8; ++i) {
       const auto a = point();
       const auto b = point();
       const auto c = point();
@@ -203,32 +208,42 @@ TEST(CartesianCovering, RandomShapesHaveNoFalseNegatives) {
       shapes.emplace_back(BoostLinestring{a, BoostPoint{a.x(), c.y()}});
       const auto half = std::abs(b.x() - a.x()) / 2;
       shapes.emplace_back(Square(a, half, 0.5));
-      shapes.emplace_back(duckdb::BoostMultiPolygon{Square(a, half / 4, 0),
-                                                    Square(b, half / 4, 0.5)});
+      shapes.emplace_back(duckdb::BoostMultiPolygon{
+        Square(a, half / 4, 0),
+        Square(b, half / 4, 0.5),
+      });
       shapes.emplace_back(std::vector<duckdb::BoostSingle>{
-        c, BoostLinestring{a, b}, Square(b, half / 2, 0.5)});
-      for (const auto& vertex :
-           {a, b, c, BoostPoint{a.x(), c.y()},
-            BoostPoint{a.x() + half / 2, a.y()},
-            BoostPoint{a.x() + half * 3 / 4, a.y() - half / 4}}) {
+        c,
+        BoostLinestring{a, b},
+        Square(b, half / 2, 0.5),
+      });
+      for (const auto& vertex : {
+             a,
+             b,
+             c,
+             BoostPoint{a.x(), c.y()},
+             BoostPoint{a.x() + half / 2, a.y()},
+             BoostPoint{a.x() + half * 3 / 4, a.y() - half / 4},
+           }) {
         queries.emplace_back(vertex);
       }
     }
     queries.insert(queries.end(), shapes.begin(), shapes.end());
     for (const bool hilbert : {false, true}) {
       for (const uint32_t budget : {1, 8, 64}) {
-        const Options options{
-          .max_cells = budget, .hilbert = hilbert, .cartesian = true};
+        const curve::Options options{
+          .max_cells = budget,
+          .hilbert = hilbert,
+          .cartesian = true,
+        };
         std::vector<std::vector<std::string>> query_terms;
         for (const auto& query : queries) {
-          query_terms.push_back(
-            Terms(sdb::connector::CoverCartesianGeometry(query, options),
-                  options, true));
+          query_terms.emplace_back(curve::Terms(
+            CoverCartesianGeometry(query, options), options, true));
         }
         for (const auto& shape : shapes) {
-          const auto indexed =
-            Terms(sdb::connector::CoverCartesianGeometry(shape, options),
-                  options, false);
+          const auto indexed = curve::Terms(
+            CoverCartesianGeometry(shape, options), options, false);
           for (size_t q = 0; q < queries.size(); ++q) {
             if (duckdb::EvalPredicate(duckdb::BoostPredicate::INTERSECTS, shape,
                                       queries[q])) {
@@ -255,3 +270,4 @@ TEST(CartesianCovering, FiniteCoordinateScales) {
 }
 
 }  // namespace
+}  // namespace sdb::connector

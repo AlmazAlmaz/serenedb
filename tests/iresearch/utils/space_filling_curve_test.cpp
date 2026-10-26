@@ -460,12 +460,16 @@ TEST(SpaceFillingCurve, LevelStepNarrowsPointCandidates) {
 TEST(SpaceFillingCurve, CoarseIndexedCellsAndBoundaryQueries) {
   for (bool hilbert : {false, true}) {
     const Options options{.max_cells = 1, .hilbert = hilbert};
-    const Box indexed{{EncodeDouble(-100), EncodeDouble(-0.001)},
-                      {EncodeDouble(100), EncodeDouble(0.001)}};
+    const Box indexed{
+      .min = {EncodeDouble(-100), EncodeDouble(-0.001)},
+      .max = {EncodeDouble(100), EncodeDouble(0.001)},
+    };
     const auto terms = Terms(CoverBox(indexed, options), options, false);
     for (double x : {-100.0, 0.0, 100.0}) {
-      const Box query{{EncodeDouble(x), EncodeDouble(0)},
-                      {EncodeDouble(x), EncodeDouble(0)}};
+      const Box query{
+        .min = {EncodeDouble(x), EncodeDouble(0)},
+        .max = {EncodeDouble(x), EncodeDouble(0)},
+      };
       EXPECT_TRUE(Match(terms, Terms(CoverBox(query, options), options, true)));
     }
   }
@@ -492,12 +496,15 @@ TEST(SpaceFillingCurve, PointQueriesAtConfiguredDepth) {
 }
 
 TEST(SpaceFillingCurve, PointTermsMatchCellTerms) {
-  std::mt19937_64 random{1137};
+  pcg64 random{1137};
   for (uint32_t dimensions : {2, 3, 8}) {
     for (bool hilbert : {false, true}) {
       for (uint32_t level : {0, 1, 17, 64}) {
         const Options options{
-          .dimensions = dimensions, .max_level = level, .hilbert = hilbert};
+          .dimensions = dimensions,
+          .max_level = level,
+          .hilbert = hilbert,
+        };
         Point point;
         point.fill(0);
         for (uint32_t axis = 0; axis < dimensions; ++axis) {
@@ -507,7 +514,7 @@ TEST(SpaceFillingCurve, PointTermsMatchCellTerms) {
         PointTerms(point, options, [&](std::span<const uint8_t> term) {
           emitted.emplace_back(term.begin(), term.end());
         });
-        std::ranges::sort(emitted);
+        absl::c_sort(emitted);
         const Cell cell{point, level};
         EXPECT_EQ(emitted, Terms(std::span{&cell, 1}, options, false));
       }
@@ -521,27 +528,30 @@ std::vector<std::string> AllCellTerms(std::span<const Cell> cells,
   for (const auto& cell : cells) {
     const auto code = Encode(cell.min, options.dimensions, options.hilbert);
     for (uint32_t level = 0; level <= cell.level; ++level) {
-      terms.push_back(
+      terms.emplace_back(
         Term(code, options.dimensions, level,
              query || level == cell.level ? kLeafTerm : kAncestorTerm));
     }
     if (query) {
-      terms.push_back(
+      terms.emplace_back(
         Term(code, options.dimensions, cell.level, kAncestorTerm));
     }
   }
-  std::ranges::sort(terms);
-  terms.erase(std::unique(terms.begin(), terms.end()), terms.end());
+  absl::c_sort(terms);
+  terms.erase(std::ranges::unique(terms).begin(), terms.end());
   return terms;
 }
 
 TEST(SpaceFillingCurve, SharedAncestorsAreEmittedOnce) {
-  std::mt19937_64 random{631};
+  pcg64 random{631};
   for (uint32_t dimensions : {2, 3}) {
     for (bool hilbert : {false, true}) {
       for (uint32_t budget : {4, 64, 256}) {
         const Options options{
-          .dimensions = dimensions, .max_cells = budget, .hilbert = hilbert};
+          .dimensions = dimensions,
+          .max_cells = budget,
+          .hilbert = hilbert,
+        };
         for (uint32_t trial = 0; trial < 16; ++trial) {
           Box box;
           for (uint32_t axis = 0; axis < dimensions; ++axis) {

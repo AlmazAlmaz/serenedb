@@ -525,7 +525,9 @@ void CellTerms(std::span<const Cell> cells, const Options& options, bool query,
     entries.emplace_back(Encode(cell.min, options.dimensions, options.hilbert),
                          cell.level);
   }
-  std::ranges::sort(entries, {}, &Entry::code);
+  absl::c_sort(entries, [](const Entry& lhs, const Entry& rhs) {
+    return lhs.code < rhs.code;
+  });
   std::array<uint8_t, kTermHeader + sizeof(Code)> term;
   const auto write = [&](const Entry& entry, uint32_t level, char kind) {
     emit(std::span<const uint8_t>{

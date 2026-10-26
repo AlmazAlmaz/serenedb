@@ -20,29 +20,32 @@
 
 #include <benchmark/benchmark.h>
 
+#include <iresearch/utils/containers/flat_hash_map.hpp>
 #include <numbers>
 #include <spatial/modules/boost/boost_geometry.hpp>
-#include <unordered_map>
 
 #include "connector/cartesian_covering.h"
 
+namespace sdb::connector {
 namespace {
 
 void CartesianRanges(benchmark::State& state) {
   const auto budget = static_cast<uint32_t>(state.range(0));
   const bool hilbert = state.range(1) != 0;
   const irs::curve::Options options{
-    .max_cells = std::max(1u, budget), .hilbert = hilbert, .cartesian = true};
+    .max_cells = std::max(1u, budget),
+    .hilbert = hilbert,
+    .cartesian = true,
+  };
   std::vector<duckdb::BoostGeometry> shapes;
-  std::unordered_map<std::string, std::vector<uint32_t>> postings;
+  irs::containers::FlatHashMap<std::string, std::vector<uint32_t>> postings;
   for (uint32_t id = 0; id < 256; ++id) {
     const auto x = static_cast<double>(id * 4);
     shapes.emplace_back(duckdb::BoostLinestring{{x, 0}, {x + 1024, 1024}});
     if (budget != 0) {
-      const auto covering =
-        sdb::connector::CoverCartesianGeometry(shapes.back(), options);
+      const auto covering = CoverCartesianGeometry(shapes.back(), options);
       for (const auto& term : irs::curve::Terms(covering, options, false)) {
-        postings[term].push_back(id);
+        postings[term].emplace_back(id);
       }
     }
   }
@@ -59,8 +62,7 @@ void CartesianRanges(benchmark::State& state) {
         ++reads;
       }
     } else {
-      const auto covering =
-        sdb::connector::CoverCartesianGeometry(query, options);
+      const auto covering = CoverCartesianGeometry(query, options);
       for (const auto& term : irs::curve::Terms(covering, options, true)) {
         const auto it = postings.find(term);
         if (it == postings.end()) {
@@ -99,7 +101,7 @@ BENCHMARK(CartesianRanges)
 
 duckdb::BoostGeometry Circle(double x, double y, double radius) {
   duckdb::BoostPolygon polygon;
-  for (int i = 0; i <= 32; ++i) {
+  for (uint32_t i = 0; i <= 32; ++i) {
     const auto angle = 2 * std::numbers::pi * (i % 32) / 32;
     polygon.outer().emplace_back(x + radius * std::cos(angle),
                                  y + radius * std::sin(angle));
@@ -111,7 +113,9 @@ duckdb::BoostGeometry Circle(double x, double y, double radius) {
 void CartesianCover(benchmark::State& state) {
   const bool line = state.range(0) != 0;
   const irs::curve::Options options{
-    .max_cells = static_cast<uint32_t>(state.range(1)), .cartesian = true};
+    .max_cells = static_cast<uint32_t>(state.range(1)),
+    .cartesian = true,
+  };
   std::vector<duckdb::BoostGeometry> shapes;
   for (uint32_t id = 0; id < 64; ++id) {
     const auto x = (id * 7919) % 100000 / 10.0;
@@ -119,14 +123,14 @@ void CartesianCover(benchmark::State& state) {
     if (line) {
       shapes.emplace_back(duckdb::BoostLinestring{{x, 0}, {x + 1024, 1024}});
     } else {
-      shapes.push_back(Circle(x, y, 2 + id % 5));
+      shapes.emplace_back(Circle(x, y, 2 + id % 5));
     }
   }
   uint64_t cells = 0;
   for (auto _ : state) {
     cells = 0;
     for (const auto& shape : shapes) {
-      cells += sdb::connector::CoverCartesianGeometry(shape, options).size();
+      cells += CoverCartesianGeometry(shape, options).size();
     }
     benchmark::DoNotOptimize(cells);
   }
@@ -139,3 +143,4 @@ BENCHMARK(CartesianCover)
   ->ArgsProduct({{0, 1}, {1, 8, 64, 256}});
 
 }  // namespace
+}  // namespace sdb::connector

@@ -36,12 +36,12 @@ namespace bg = duckdb::bg;
 using Rectangle = bg::model::box<duckdb::BoostPoint>;
 using Segment = bg::model::segment<duckdb::BoostPoint>;
 
-constexpr int kWidenSteps = 4;
-constexpr size_t kClipBudgetBase = size_t{1} << 16;
-constexpr size_t kClipBudgetPerEdge = 16;
+inline constexpr uint32_t kWidenSteps = 4;
+inline constexpr size_t kClipBudgetBase = size_t{1} << 16;
+inline constexpr size_t kClipBudgetPerEdge = 16;
 
 double Widen(double value, bool up) {
-  for (int step = 0; step < kWidenSteps; ++step) {
+  for (uint32_t step = 0; step < kWidenSteps; ++step) {
     if (value == 0) {
       value = up ? std::numeric_limits<double>::denorm_min()
                  : -std::numeric_limits<double>::denorm_min();
@@ -65,9 +65,11 @@ class ShapeClassifier {
     _clip_budget = kClipBudgetBase + kClipBudgetPerEdge * _edges.size();
     double magnitude = 1;
     for (uint32_t axis = 0; axis < 2; ++axis) {
-      magnitude =
-        std::max({magnitude, std::abs(irs::curve::DecodeDouble(box.min[axis])),
-                  std::abs(irs::curve::DecodeDouble(box.max[axis]))});
+      magnitude = std::max({
+        magnitude,
+        std::abs(irs::curve::DecodeDouble(box.min[axis])),
+        std::abs(irs::curve::DecodeDouble(box.max[axis])),
+      });
     }
     _slack = 4 * std::numeric_limits<double>::epsilon() * magnitude;
   }
@@ -97,14 +99,14 @@ class ShapeClassifier {
     if (context == 0) {
       for (uint32_t edge = 0; edge < _edges.size(); ++edge) {
         if (Touches(_edges[edge], rectangle)) {
-          _clipped.push_back(edge);
+          _clipped.emplace_back(edge);
         }
       }
     } else {
-      const auto [from, to] = _clips[context];
-      for (auto i = from; i < to; ++i) {
+      const auto clip = _clips[context];
+      for (auto i = clip.begin; i < clip.end; ++i) {
         if (Touches(_edges[_clipped[i]], rectangle)) {
-          _clipped.push_back(_clipped[i]);
+          _clipped.emplace_back(_clipped[i]);
         }
       }
     }
@@ -141,6 +143,11 @@ class ShapeClassifier {
     bool point;
   };
 
+  struct Clip {
+    size_t begin;
+    size_t end;
+  };
+
   bool Touches(const Edge& edge, const Rectangle& rectangle) const {
     const auto& a = edge.segment.first;
     const auto& b = edge.segment.second;
@@ -155,7 +162,7 @@ class ShapeClassifier {
   }
 
   template<typename Ring>
-  int Locate(const duckdb::BoostPoint& point, const Ring& ring) const {
+  int32_t Locate(const duckdb::BoostPoint& point, const Ring& ring) const {
     using Winding = bg::strategy::within::cartesian_winding<>;
     if (ring.size() < 4) {
       return -1;
@@ -175,8 +182,8 @@ class ShapeClassifier {
     return Winding::result(state);
   }
 
-  int Locate(const duckdb::BoostPoint& point,
-             const duckdb::BoostPolygon& polygon) const {
+  int32_t Locate(const duckdb::BoostPoint& point,
+                 const duckdb::BoostPolygon& polygon) const {
     const auto code = Locate(point, polygon.outer());
     if (code == 1) {
       for (const auto& ring : polygon.inners()) {
@@ -189,7 +196,7 @@ class ShapeClassifier {
   }
 
   void Add(const duckdb::BoostPoint& point) {
-    _edges.push_back({{point, point}, true});
+    _edges.emplace_back(Segment{point, point}, true);
   }
 
   template<typename Path>
@@ -198,7 +205,7 @@ class ShapeClassifier {
       Add(path.front());
     }
     for (size_t i = 1; i < path.size(); ++i) {
-      _edges.push_back({{path[i - 1], path[i]}, false});
+      _edges.emplace_back(Segment{path[i - 1], path[i]}, false);
     }
   }
 
@@ -209,7 +216,7 @@ class ShapeClassifier {
     for (const auto& ring : polygon.inners()) {
       AddPath(ring);
     }
-    _polygons.push_back(&polygon);
+    _polygons.emplace_back(&polygon);
   }
 
   template<typename Multi>
@@ -226,7 +233,7 @@ class ShapeClassifier {
   std::vector<Edge> _edges;
   std::vector<const duckdb::BoostPolygon*> _polygons;
   std::vector<uint32_t> _clipped;
-  std::vector<std::pair<size_t, size_t>> _clips;
+  std::vector<Clip> _clips;
 };
 
 }  // namespace
@@ -265,8 +272,9 @@ std::vector<irs::curve::Cell> CoverCartesianGeometry(
     return {irs::curve::Cell{}};
   }
   const irs::curve::Box box{
-    {irs::curve::EncodeDouble(x0), irs::curve::EncodeDouble(y0)},
-    {irs::curve::EncodeDouble(x1), irs::curve::EncodeDouble(y1)}};
+    .min = {irs::curve::EncodeDouble(x0), irs::curve::EncodeDouble(y0)},
+    .max = {irs::curve::EncodeDouble(x1), irs::curve::EncodeDouble(y1)},
+  };
   return irs::curve::Cover(
     options, ShapeClassifier{geometry, box}, [&](const irs::curve::Cell& cell) {
       long double size = 1;
