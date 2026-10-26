@@ -237,7 +237,7 @@ duckdb::unique_ptr<duckdb::Expression> IsNotNull(
   const duckdb::Expression& coordinate) {
   auto check = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
     duckdb::ExpressionType::OPERATOR_IS_NOT_NULL, duckdb::LogicalType::BOOLEAN);
-  check->GetChildrenMutable().push_back(coordinate.Copy());
+  check->GetChildrenMutable().emplace_back(coordinate.Copy());
   return check;
 }
 
@@ -264,8 +264,8 @@ void CollectRanges(const duckdb::Expression& expression,
         const duckdb::Expression* upper, bool lower_inclusive = true,
         bool upper_inclusive = true) {
       if (auto normalized = normalize(PeelCast(PeelSortKey(component)))) {
-        ranges.push_back({std::move(normalized), lower, upper, lower_inclusive,
-                          upper_inclusive});
+        ranges.emplace_back(std::move(normalized), lower, upper,
+                            lower_inclusive, upper_inclusive);
       }
     };
   const auto& function = expression.Cast<duckdb::BoundFunctionExpression>();
@@ -400,7 +400,7 @@ bool ClaimCurveMatch(
           RaiseMin(box.min[axis], bound, include_lower, empty);
         }
       }
-      rechecks.push_back(Compare(
+      rechecks.emplace_back(Compare(
         context,
         include_lower ? duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO
                       : duckdb::ExpressionType::COMPARE_GREATERTHAN,
@@ -413,14 +413,14 @@ bool ClaimCurveMatch(
           LowerMax(box.max[axis], bound, include_upper, empty);
         }
       }
-      rechecks.push_back(Compare(
+      rechecks.emplace_back(Compare(
         context,
         include_upper ? duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO
                       : duckdb::ExpressionType::COMPARE_LESSTHAN,
         coordinate, *hi));
     }
     if (!lo && !hi) {
-      rechecks.push_back(IsNotNull(coordinate));
+      rechecks.emplace_back(IsNotNull(coordinate));
     }
   }
   if (empty) {
@@ -430,7 +430,7 @@ bool ClaimCurveMatch(
   }
   filters[index] = std::move(rechecks.front());
   for (size_t i = 1; i < rechecks.size(); ++i) {
-    filters.push_back(std::move(rechecks[i]));
+    filters.emplace_back(std::move(rechecks[i]));
   }
   return true;
 }

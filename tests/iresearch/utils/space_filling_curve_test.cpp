@@ -91,7 +91,7 @@ std::vector<std::string> ReferencePointTerms(const Point& point,
   std::vector<std::string> terms;
   for (uint32_t level = 0; level <= options.max_level; ++level) {
     if (level == options.max_level || level % options.level_step == 0) {
-      terms.push_back(
+      terms.emplace_back(
         ReferenceTerm(code, options.dimensions, level,
                       level == options.max_level ? kLeafTerm : kAncestorTerm));
     }
@@ -101,30 +101,36 @@ std::vector<std::string> ReferencePointTerms(const Point& point,
 
 std::vector<Point> EdgePoints(uint32_t dimensions) {
   std::vector<Point> points;
-  for (uint64_t value :
-       {uint64_t{0}, UINT64_MAX, uint64_t{1}, UINT64_MAX - 1, uint64_t{1} << 63,
-        (uint64_t{1} << 63) - 1, uint64_t{0xaaaaaaaaaaaaaaaa},
-        uint64_t{0x5555555555555555}}) {
+  for (uint64_t value : {
+         uint64_t{0},
+         UINT64_MAX,
+         uint64_t{1},
+         UINT64_MAX - 1,
+         uint64_t{1} << 63,
+         (uint64_t{1} << 63) - 1,
+         uint64_t{0xaaaaaaaaaaaaaaaa},
+         uint64_t{0x5555555555555555},
+       }) {
     Point point;
     point.fill(value);
-    points.push_back(point);
+    points.emplace_back(point);
   }
   Point alternating;
   for (uint32_t axis = 0; axis < kMaxDimensions; ++axis) {
     alternating[axis] = axis % 2 ? 0xaaaaaaaaaaaaaaaa : 0x5555555555555555;
   }
-  points.push_back(alternating);
+  points.emplace_back(alternating);
   for (uint32_t bit = 0; bit < 64; ++bit) {
     Point point;
     point.fill(uint64_t{1} << bit);
-    points.push_back(point);
+    points.emplace_back(point);
     for (uint32_t axis = 0; axis < dimensions; ++axis) {
       point.fill(0);
       point[axis] = uint64_t{1} << bit;
-      points.push_back(point);
+      points.emplace_back(point);
       point.fill(UINT64_MAX);
       point[axis] ^= uint64_t{1} << bit;
-      points.push_back(point);
+      points.emplace_back(point);
     }
   }
   return points;
@@ -210,8 +216,9 @@ TEST(SpaceFillingCurve, OrderedNumbers) {
   EXPECT_LT(EncodeSigned(INT64_MIN), EncodeSigned(-1));
   EXPECT_LT(EncodeSigned(-1), EncodeSigned(0));
   EXPECT_LT(EncodeSigned(0), EncodeSigned(INT64_MAX));
-  const std::array<double, 9> values{-INFINITY, -1e300, -1.0,  -1e-300, 0.0,
-                                     1e-300,    1.0,    1e300, INFINITY};
+  const std::array<double, 9> values{
+    -INFINITY, -1e300, -1.0, -1e-300, 0.0, 1e-300, 1.0, 1e300, INFINITY,
+  };
   for (size_t i = 1; i < values.size(); ++i) {
     EXPECT_LT(EncodeDouble(values[i - 1]), EncodeDouble(values[i]));
   }
@@ -245,9 +252,10 @@ TEST(SpaceFillingCurve, NormalizedKeys) {
   EXPECT_EQ(NormalizeDouble(1000.5, 1000, 1001), uint64_t{1} << 63);
   EXPECT_LT(NormalizeDouble(1000.25, 1000, 1001),
             NormalizeDouble(1000.75, 1000, 1001));
-  const std::array<double, 12> values{-INFINITY, -1.0, -0.0, 0.0,
-                                      1e-300,    0.25, 0.5,  0.75,
-                                      1 - 1e-16, 1.0,  2.0,  INFINITY};
+  const std::array<double, 12> values{
+    -INFINITY, -1.0, -0.0,      0.0, 1e-300, 0.25,
+    0.5,       0.75, 1 - 1e-16, 1.0, 2.0,    INFINITY,
+  };
   for (size_t i = 1; i < values.size(); ++i) {
     EXPECT_LE(NormalizeDouble(values[i - 1], 0, 1),
               NormalizeDouble(values[i], 0, 1));
@@ -303,7 +311,8 @@ TEST(SpaceFillingCurve, LindelHilbertReference) {
     "eaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "80000000000000000000000000000000", "90000000000000000000000000000000",
     "f0000000000000000000000000000000", "caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "a0000000000000000000000000000000"};
+    "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "a0000000000000000000000000000000",
+  };
   constexpr std::string_view hex = "0123456789abcdef";
   for (uint64_t x = 0; x < 4; ++x) {
     for (uint64_t y = 0; y < 4; ++y) {
@@ -364,8 +373,11 @@ TEST(SpaceFillingCurve, BudgetAndNoFalseNegatives) {
   for (uint32_t dimensions : {2, 3, 4, 8}) {
     for (bool hilbert : {false, true}) {
       for (uint32_t budget : {1, 4, 64}) {
-        for (uint32_t step : {uint32_t{1}, DefaultLevelStep(dimensions),
-                              MaxLevelStep(dimensions)}) {
+        for (uint32_t step : {
+               uint32_t{1},
+               DefaultLevelStep(dimensions),
+               MaxLevelStep(dimensions),
+             }) {
           const Options options{
             .dimensions = dimensions,
             .max_cells = budget,
@@ -542,12 +554,14 @@ TEST(SpaceFillingCurve, NormalizedFloatingKeysRemainMonotoneAtExtremes) {
          DoubleBounds{.lo = 1000.0, .hi = 1000.0000000001},
          DoubleBounds{.lo = -0.0, .hi = 1.0},
        }) {
-    std::vector<double> values{-INFINITY, lo,      std::nextafter(lo, hi),
-                               0.0,       -0.0,    std::nextafter(hi, lo),
-                               hi,        INFINITY};
+    std::vector<double> values{
+      -INFINITY, lo,       std::nextafter(lo, hi),
+      0.0,       -0.0,     std::nextafter(hi, lo),
+      hi,        INFINITY,
+    };
     for (uint32_t i = 0; i < 4096; ++i) {
       const auto fraction = static_cast<double>(random() >> 11) * 0x1p-53;
-      values.push_back(lo + fraction * (hi - lo));
+      values.emplace_back(lo + fraction * (hi - lo));
     }
     absl::c_sort(values);
     for (size_t i = 1; i < values.size(); ++i) {

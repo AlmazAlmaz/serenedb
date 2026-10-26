@@ -61,14 +61,15 @@ struct Sample {
         if (method == 0) {
           for (uint32_t level = 0; level < 4; ++level) {
             const auto shift = level * 16;
-            numeric[axis][level][(point[axis] >> shift) << shift].push_back(id);
+            numeric[axis][level][(point[axis] >> shift) << shift].emplace_back(
+              id);
           }
         }
       }
-      points.push_back(point);
+      points.emplace_back(point);
       if (method != 0) {
         PointTerms(point, options, [&](std::span<const uint8_t> term) {
-          curve[std::string{term.begin(), term.end()}].push_back(id);
+          curve[std::string{term.begin(), term.end()}].emplace_back(id);
         });
       }
     }

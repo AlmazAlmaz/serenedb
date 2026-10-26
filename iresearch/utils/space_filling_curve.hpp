@@ -185,15 +185,15 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
   if (root_relation == Relation::Outside) {
     return result;
   }
-  pending.push(
-    {root, root_relation, static_cast<long double>(priority(root)), order++});
+  pending.emplace(root, root_relation, static_cast<long double>(priority(root)),
+                  order++);
   std::vector<Pending> children;
   while (!pending.empty()) {
     const auto top = pending.top();
     pending.pop();
     const auto& cell = top.cell;
     if (cell.level == options.max_level || top.relation == Relation::Inside) {
-      result.push_back(cell);
+      result.emplace_back(cell);
       continue;
     }
     children.clear();
@@ -208,17 +208,17 @@ std::vector<Cell> Cover(const Options& options, Classifier&& classify,
       }
       const auto next_relation = classify(next);
       if (next_relation != Relation::Outside) {
-        children.push_back({next, next_relation, 0, 0});
+        children.emplace_back(next, next_relation, 0, 0);
       }
     }
     if (children.size() + pending.size() + result.size() > options.max_cells) {
-      result.push_back(cell);
+      result.emplace_back(cell);
       continue;
     }
     for (auto& child : children) {
       child.priority = static_cast<long double>(priority(child.cell));
       child.order = order++;
-      pending.push(child);
+      pending.emplace(child);
     }
   }
   return result;
@@ -457,7 +457,7 @@ inline std::vector<std::string> PointQueryTerms(std::span<const Cell> cells,
   terms.reserve(cells.size());
   const auto add = [&](const Cell& cell) {
     const auto code = Encode(cell.min, options.dimensions, options.hilbert);
-    terms.push_back(
+    terms.emplace_back(
       Term(code, options.dimensions, cell.level,
            cell.level == options.max_level ? kLeafTerm : kAncestorTerm));
   };

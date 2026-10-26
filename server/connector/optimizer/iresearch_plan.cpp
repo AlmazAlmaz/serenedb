@@ -1541,7 +1541,7 @@ bool ClaimSearchConjuncts(
     if (connector::AddCurveRangeCandidates(*root_and, *ranges, *curve, info,
                                            context)) {
       any_claimed = true;
-      analyzed_fields.insert(info.field_id);
+      analyzed_fields.emplace(info.field_id);
       if (irs::field_limits::valid(info.null_field_id)) {
         null_markers[info.null_field_id] = info.field_id;
       }
